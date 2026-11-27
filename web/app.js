@@ -729,8 +729,14 @@ function bind() {
     applyInfo(S.info);
     sendCfg();
   };
-  const full = on => { document.body.classList.toggle("full", on); $("#unfull").hidden = !on; };
-  $("#fullBtn").onclick = () => full(true);
+  // full screen: keyboard and trackpad away, the bar under the screen stays (⤡ brings them back)
+  const full = on => {
+    document.body.classList.toggle("full", on);
+    $("#fullBtn").textContent = on ? "⤡ ⌨︎" : "⤢";
+    $("#fullBtn").title = on ? "Balik ke keyboard + trackpad" : "Layar penuh";
+    setTimeout(sendCfg, 350);                                  // bigger picture: ask for a sharper one
+  };
+  $("#fullBtn").onclick = () => full(!document.body.classList.contains("full"));
   $("#unfull").onclick = () => full(false);
   $("#devList").addEventListener("click", e => {
     const u = e.target.closest("[data-use]"), d = e.target.closest("[data-del]");

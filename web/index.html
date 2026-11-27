@@ -24,15 +24,17 @@
         <div id="loupe" hidden><canvas id="loupeC" width="300" height="300"></canvas><div class="cross"></div><span class="lz"></span></div>
         <div id="status">Nyambung…</div>
       </div>
-      <div id="hud">
-        <button id="devBtn" title="Ganti Mac"><span id="devName">Mac</span> ▾</button>
-        <span id="fps"></span>
+    </div>
+    <!-- the controls live in the bezel under the screen (like a MacBook's chin), never on top of the Mac's picture -->
+    <div id="chin">
+      <button id="devBtn" title="Ganti Mac"><span id="devName">Mac</span> ▾</button>
+      <span id="fps"></span><span id="label" hidden>Mac Remote</span>
+      <span class="right">
         <button id="dispBtn" hidden title="Ganti layar">▣ 1</button>
         <button id="fullBtn" title="Layar penuh">⤢</button>
         <button id="gearBtn" title="Pengaturan">⚙</button>
-      </div>
+      </span>
     </div>
-    <div id="chin"><span id="label">Mac Remote</span></div>
   </section>
   <section id="base">
     <div id="tools">
