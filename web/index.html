@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Mac Remote">
+<meta name="theme-color" content="#0b0b0d">
+<title>Mac Remote</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="mac">
+  <section id="lid">
+    <div id="bezel">
+      <div id="screen">
+        <img id="frame" alt="" draggable="false">
+        <div id="cursor"></div>
+        <div id="status">Nyambung…</div>
+      </div>
+      <div id="hud">
+        <button id="devBtn" title="Ganti Mac"><span id="devName">Mac</span> ▾</button>
+        <span id="fps"></span>
+        <button id="dispBtn" hidden title="Ganti layar">▣ 1</button>
+        <button id="fullBtn" title="Layar penuh">⤢</button>
+        <button id="gearBtn" title="Pengaturan">⚙</button>
+      </div>
+    </div>
+    <div id="chin"><span id="label">Mac Remote</span></div>
+  </section>
+  <section id="base">
+    <div id="tools">
+      <button data-act="ime" title="Ketik pakai keyboard HP (dikte juga bisa)">Aa</button>
+      <button data-act="mission" title="Mission Control">▦</button>
+      <button data-act="desktopLeft" title="Desktop kiri">◀︎</button>
+      <button data-act="desktopRight" title="Desktop kanan">▶︎</button>
+      <button data-act="spotlight" title="Spotlight">⌕</button>
+      <button data-act="voldown" title="Volume turun">🔉</button>
+      <button data-act="volup" title="Volume naik">🔊</button>
+      <button data-act="mute" title="Mute">🔇</button>
+    </div>
+    <div id="kb"></div>
+    <div id="pad"><div id="padhint">1 jari geser · tap klik · 2 jari scroll / tap klik kanan · tahan = drag · 3 jari = desktop / Mission Control</div></div>
+  </section>
+</div>
+<button id="unfull" hidden>⌨︎</button>
+<textarea id="ime" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="ketik ke Mac"></textarea>
+<div id="toast" hidden></div>
+<div id="sheet" hidden>
+  <div class="card">
+    <div class="sheethead"><b>Mac Remote</b><button id="closeSheet">Selesai</button></div>
+    <h3>Mac</h3>
+    <div id="devList"></div>
+    <form id="addForm">
+      <input id="addLink" placeholder="Tempel link dari Mac lain (http://…:8787/?token=…)" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <button>Tambah</button>
+    </form>
+    <h3>Tampilan</h3>
+    <label>Kualitas layar <select id="setQuality"><option value="low">Hemat (cepat)</option><option value="mid">Normal</option><option value="high">Tajam</option></select></label>
+    <label>Maks fps <select id="setFps"><option>10</option><option>15</option><option>24</option><option>30</option><option>60</option></select></label>
+    <label>Baris F1–F12 <input type="checkbox" id="setFrow"></label>
+    <h3>Trackpad</h3>
+    <label>Kecepatan pointer <input type="range" id="setSpeed" min="0.5" max="4" step="0.1"></label>
+    <label>Kecepatan scroll <input type="range" id="setScroll" min="0.3" max="4" step="0.1"></label>
+    <label>Balik arah scroll <input type="checkbox" id="setInvert"></label>
+    <p class="muted">Tap ⌘ ⌥ ⌃ ⇧ sekali = buat tombol berikutnya. Tap dua kali / tahan = dikunci (buat ⌘+Tab: kunci ⌘, tap Tab, tap ⌘ lagi). fn + panah = Home/End/PgUp/PgDn, fn + ⌫ = Delete maju.</p>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
