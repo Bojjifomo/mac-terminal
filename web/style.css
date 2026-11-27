@@ -15,7 +15,8 @@
   --ok: #34c759;
   --warn: #ffb020;
   --err: #ff5b5b;
-  --kh: clamp(30px, 5.4vh, 46px);         /* key height */
+  --kh: clamp(24px, 4.3vh, 44px);         /* key height: shrinks so the trackpad always fits */
+  --scr-max: 42vh;                         /* the picture never takes more than this */
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--key-text); overflow: hidden;
@@ -30,10 +31,10 @@ button { font: inherit; color: inherit; }
 #lid { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; }
 #bezel { position: relative; width: 100%; background: #050506; border: 1px solid #2c2d31;
   border-radius: 18px 18px 6px 6px; padding: 8px 8px 6px; box-shadow: 0 0 0 2px #1a1b1e inset; }
-#screen { position: relative; width: 100%; aspect-ratio: 16 / 10; max-height: 52vh; margin: 0 auto;
+#screen { position: relative; width: 100%; aspect-ratio: 16 / 10; max-height: var(--scr-max); margin: 0 auto;
   background: #000; border-radius: 6px; overflow: hidden; touch-action: none; }
 #frame { width: 100%; height: 100%; display: block; object-fit: contain; pointer-events: none; }
-#cursor { position: absolute; width: 14px; height: 20px; pointer-events: none; display: none; transform: translate(-1px, -1px);
+#cursor { position: absolute; width: 14px; height: 20px; pointer-events: none; display: block; transform: translate(-1px, -1px); z-index: 1;
   background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 20'><path d='M1 1v15l4-3.5 2.8 5.8 2.4-1.1L7.4 11.6H12z' fill='black' stroke='white' stroke-width='1.2'/></svg>") no-repeat; }
 #status { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center;
   padding: 16px; color: var(--muted); font-size: 13px; background: rgba(0,0,0,.55); }
@@ -79,7 +80,7 @@ button { font: inherit; color: inherit; }
 .arrows .ud { flex: 1 1 0; display: flex; flex-direction: column; gap: 2px; }
 .arrows .ud .k { height: calc(var(--kh) * .48 - 1px); }
 
-#pad { position: relative; flex: 1 1 auto; min-height: 110px; width: 74%; align-self: center; border-radius: 12px;
+#pad { position: relative; flex: 1 1 auto; min-height: max(110px, 17vh); width: 74%; align-self: center; border-radius: 12px;
   background: linear-gradient(180deg, #36383f, var(--pad)); border: 1px solid var(--pad-edge);
   box-shadow: 0 1px 0 rgba(255,255,255,.05) inset; touch-action: none; }
 #pad.drag { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(79,140,255,.35) inset; }
@@ -119,11 +120,29 @@ body.full #screen { max-height: none; }
 .dev.cur button.use { background: var(--ok); color: #000; border-color: var(--ok); }
 .muted { color: var(--muted); font-size: 12px; line-height: 1.5; }
 
+@supports (height: 1dvh) {
+  :root { --kh: clamp(24px, 4.3dvh, 44px); --scr-max: 42dvh; }
+  #pad { min-height: max(110px, 17dvh); }
+}
+
+/* wide screen (iPhone Duo open flat, iPad, a phone on its side): picture on top, keyboard with the trackpad
+   beside it, so nothing falls off the bottom */
+@media (orientation: landscape) {
+  :root { --kh: clamp(22px, 5.6vh, 42px); --scr-max: 50vh; }
+  #mac { max-width: none; }
+  #base { display: grid; grid-template-columns: minmax(0, 1fr) minmax(160px, 30%); grid-template-rows: auto minmax(0, 1fr);
+    column-gap: 10px; row-gap: 6px; }
+  #tools { grid-column: 1 / -1; }
+  #kb { grid-column: 1; grid-row: 2; align-self: start; }
+  #pad { grid-column: 2; grid-row: 2; width: 100%; min-height: 0; height: 100%; align-self: stretch; }
+  @supports (height: 1dvh) { :root { --kh: clamp(22px, 5.6dvh, 42px); --scr-max: 50dvh; } }
+}
+
+/* a phone on its side: picture left, keyboard + trackpad right */
 @media (orientation: landscape) and (max-height: 560px) {
-  :root { --kh: clamp(24px, 7vh, 36px); }
-  #mac { flex-direction: row; gap: 8px; max-width: none; }
+  :root { --kh: clamp(20px, 7vh, 34px); --scr-max: 90vh; }
+  #mac { flex-direction: row; gap: 8px; }
   #lid { flex: 1 1 55%; justify-content: center; }
-  #screen { max-height: 82vh; }
-  #base { flex: 1 1 45%; margin-top: 0; }
-  #pad { width: 100%; }
+  #base { flex: 1 1 45%; margin-top: 0; display: flex; flex-direction: column; }
+  #pad { width: 100%; height: auto; min-height: 70px; flex: 1 1 auto; }
 }

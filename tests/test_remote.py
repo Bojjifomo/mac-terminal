@@ -170,5 +170,106 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 400)
 
 
+class WebSocketTest(unittest.TestCase):
+    """The live connection: pictures pushed by the Mac, input on the same socket."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.inp = DemoInput()
+        server.Handler.token = "tok"
+        server.Handler.name = "WS Mac"
+        server.Handler.controller = control.Controller(cls.inp)
+        server.Handler.frames = server.FrameSource(DemoCapture(cls.inp), cls.inp.displays, share_s=0)
+        cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+
+    def connect(self, token="tok"):
+        import base64
+        import socket
+        s = socket.create_connection(self.srv.server_address)
+        s.settimeout(5)
+        key = base64.b64encode(os.urandom(16)).decode()
+        s.sendall(f"GET /api/ws?token={token} HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                  f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n".encode())
+        f = s.makefile("rb")
+        status = f.readline()
+        headers = {}
+        while True:
+            line = f.readline()
+            if line in (b"\r\n", b""):
+                break
+            k, _, v = line.decode().partition(":")
+            headers[k.strip().lower()] = v.strip()
+        self.addCleanup(s.close)
+        return s, f, status, headers, key
+
+    def tx(self, s, obj):
+        import ws as W
+        s.sendall(W.encode(json.dumps(obj).encode(), 0x1, os.urandom(4)))   # a browser always masks
+
+    def rx(self, f):
+        import ws as W
+        return W.WebSocket(f, None).recv()
+
+    def frame(self, f):
+        m = self.rx(f)
+        while isinstance(m, str):
+            m = self.rx(f)
+        n = int.from_bytes(m[:4], "big")
+        return json.loads(m[4:4 + n]), m[4 + n:]
+
+    def test_handshake_and_wrong_token(self):
+        import ws as W
+        _, _, status, headers, key = self.connect()
+        self.assertIn(b"101", status)
+        self.assertEqual(headers["sec-websocket-accept"], W.accept_key(key))
+        _, _, status, _, _ = self.connect(token="wrong")
+        self.assertIn(b"401", status)
+
+    def test_frames_are_pushed_and_input_arrives(self):
+        s, f, *_ = self.connect()
+        info = json.loads(self.rx(f))
+        self.assertEqual((info["t"], info["name"]), ("info", "WS Mac"))
+        self.tx(s, {"t": "cfg", "w": 480, "q": 0.5, "fps": 60})
+        head, jpeg = self.frame(f)
+        self.assertEqual(jpeg[:2], b"\xff\xd8")
+        self.assertEqual(head["w"], 480)
+        self.assertEqual(len(head["c"]), 2)
+        self.tx(s, {"t": "ack"})
+        self.tx(s, {"t": "input", "ev": [{"t": "text", "s": "lewat socket"}]})
+        head2, _ = self.frame(f)                                         # the screen changed: a new picture
+        self.assertNotEqual(head2["id"], head["id"])
+        self.assertTrue(self.inp.text_buf.endswith("lewat socket"))
+
+    def test_no_new_picture_while_the_screen_is_still(self):
+        s, f, *_ = self.connect()
+        self.rx(f)
+        self.tx(s, {"t": "cfg", "w": 320, "q": 0.5, "fps": 60})
+        self.frame(f)
+        self.tx(s, {"t": "ack"})
+        s.settimeout(0.6)
+        import socket
+        with self.assertRaises(socket.timeout):
+            m = self.rx(f)
+            while isinstance(m, str):                                     # cursor notes are fine, pictures are not
+                m = self.rx(f)
+
+    def test_bad_event_is_reported_not_fatal(self):
+        s, f, *_ = self.connect()
+        self.rx(f)
+        self.tx(s, {"t": "input", "ev": [{"t": "key", "k": "nope"}]})
+        m = self.rx(f)
+        while not (isinstance(m, str) and json.loads(m)["t"] == "error"):
+            m = self.rx(f)
+        self.tx(s, {"t": "input", "ev": [{"t": "text", "s": "masih hidup"}]})
+        import time
+        time.sleep(0.2)
+        self.assertTrue(self.inp.text_buf.endswith("masih hidup"))
+
+
 if __name__ == "__main__":
     unittest.main()
