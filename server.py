@@ -29,10 +29,11 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from control import Controller  # noqa: E402
+import ws as wslib  # noqa: E402
 
 WEB = HERE / "web"
 CONFIG = Path(os.environ.get("MAC_REMOTE_HOME", Path.home() / ".mac-remote")) / "config.json"
-VERSION = "1.0"
+VERSION = "1.1"
 STATIC = {"/": "index.html", "/index.html": "index.html", "/app.js": "app.js", "/style.css": "style.css",
           "/manifest.webmanifest": "manifest.webmanifest", "/icon.svg": "icon.svg", "/icon-180.png": "icon-180.png",
           "/icon-512.png": "icon-512.png"}
@@ -113,6 +114,118 @@ class FrameSource:
             return f
 
 
+# ---------------------------------------------------------------- live session (WebSocket)
+PRESETS = {"low": (960, 0.45), "mid": (1280, 0.55), "high": (1920, 0.65)}
+MAX_IN_FLIGHT = 2                     # frames sent but not yet shown on the phone: more = old pictures queue up
+
+
+class Session:
+    """One phone, one socket. The Mac pushes a picture as soon as there is a new one and the phone has shown the
+    previous ones (MAX_IN_FLIGHT); a picture that did not change is not sent again. Input comes back on the socket."""
+
+    def __init__(self, sock: "wslib.WebSocket", handler_cls):
+        self.ws = sock
+        self.H = handler_cls
+        self.cfg = {"w": 1280, "q": 0.55, "fps": 30, "d": 0}
+        self.in_flight = 0
+        self.cond = threading.Condition()
+        self.running = True
+        self.last_etag = ""
+        self.last_cursor = None
+        self.ready = False                    # the phone said what size it wants (first "cfg"): send nothing before
+
+    # ---- frames out
+    def sender(self):
+        try:
+            while self.running:
+                with self.cond:
+                    while self.running and (not self.ready or self.in_flight >= MAX_IN_FLIGHT):
+                        self.cond.wait(0.5)
+                    cfg = dict(self.cfg)
+                if not self.running:
+                    break
+                t0 = time.monotonic()
+                f = self.H.frames.frame(int(cfg["d"]), int(cfg["w"]), float(cfg["q"]))
+                d = f["display"]
+                cx, cy = self.H.controller.b.pos()
+                cur = [round((cx - d["x"]) / d["w"], 5), round((cy - d["y"]) / d["h"], 5)]
+                if f["etag"] != self.last_etag:
+                    head = json.dumps({"t": "frame", "w": f["w"], "h": f["h"], "sw": d["w"], "sh": d["h"], "c": cur,
+                                       "id": f["etag"]}).encode()
+                    with self.cond:
+                        self.in_flight += 1
+                    self.ws.send_bytes(len(head).to_bytes(4, "big") + head + f["data"])
+                    self.last_etag, self.last_cursor = f["etag"], cur
+                elif cur != self.last_cursor:                  # screen still, pointer moved (mouse at the Mac)
+                    self.ws.send_text(json.dumps({"t": "cursor", "c": cur}))
+                    self.last_cursor = cur
+                wait = 1.0 / max(1, min(60, float(cfg["fps"]))) - (time.monotonic() - t0)
+                if wait > 0:
+                    time.sleep(wait)
+        except wslib.Closed:
+            pass
+        except Exception as exc:                            # noqa: BLE001 - tell the phone, then stop
+            try:
+                self.ws.send_text(json.dumps({"t": "error", "error": str(exc)[:300]}))
+            except wslib.Closed:
+                pass
+        finally:
+            self.running = False
+
+    # ---- messages in
+    def on_message(self, msg):
+        if not isinstance(msg, str):
+            return
+        m = json.loads(msg)
+        t = m.get("t")
+        if t == "ack":
+            with self.cond:
+                self.in_flight = max(0, self.in_flight - 1)
+                self.cond.notify()
+        elif t == "cfg":
+            with self.cond:
+                preset = PRESETS.get(m.get("quality"))
+                if preset:
+                    self.cfg["w"], self.cfg["q"] = preset
+                if m.get("w"):
+                    self.cfg["w"] = min(max(int(m["w"]), 160), 3200)
+                if m.get("fps"):
+                    self.cfg["fps"] = min(max(float(m["fps"]), 1), 60)
+                if "d" in m:
+                    self.cfg["d"] = int(m["d"])
+                self.in_flight = 0
+                self.ready = True
+                self.last_etag = ""                            # new size or screen: send a picture right away
+                self.cond.notify()
+        elif t == "input":
+            with self.H.input_lock:
+                self.H.controller.handle_all(list(m.get("ev") or [])[:500])
+                self.H.last_input[0] = time.monotonic()
+        elif t == "ping":
+            self.ws.send_text(json.dumps({"t": "pong", "ts": m.get("ts")}))
+
+    def run(self):
+        try:
+            self.ws.send_text(json.dumps({"t": "info", "name": self.H.name, "version": VERSION,
+                                          "displays": self.H.controller.b.displays()}))
+            threading.Thread(target=self.sender, daemon=True).start()
+            while self.running:
+                msg = self.ws.recv()
+                try:
+                    self.on_message(msg)
+                except (ValueError, KeyError, TypeError) as exc:
+                    self.ws.send_text(json.dumps({"t": "error", "error": str(exc)[:200]}))
+        except wslib.Closed:
+            pass
+        finally:
+            self.running = False
+            with self.cond:
+                self.cond.notify_all()
+            with self.H.input_lock:
+                self.H.controller.release_all()            # phone gone mid-drag / with ⌘ held
+            self.H.session_ended()
+
+
 # ---------------------------------------------------------------- http
 class Handler(BaseHTTPRequestHandler):
     token = ""
@@ -169,6 +282,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(404, b"not found", "text/plain")
         if not self._authed(q):
             return self._json({"ok": False, "error": "token salah: buka lagi link dari Mac"}, 401)
+        if u.path == "/api/ws":
+            return self._websocket()
         try:
             if u.path == "/api/info":
                 return self._json({"ok": True, "name": self.name, "version": VERSION, "displays": self.controller.b.displays(),
@@ -190,6 +305,37 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": False, "error": str(exc)[:300]}, 500)
         return self._json({"ok": False, "error": "not found"}, 404)
 
+    sessions = [0]
+    sessions_lock = threading.Lock()
+
+    @classmethod
+    def session_ended(cls):
+        with cls.sessions_lock:
+            cls.sessions[0] -= 1
+            idle = cls.sessions[0] <= 0
+        stop = getattr(cls.frames.capture, "idle", None)
+        if idle and stop:
+            stop()                                          # nobody watching: stop the screen stream
+
+    def _websocket(self):
+        key = self.headers.get("Sec-WebSocket-Key")
+        if (self.headers.get("Upgrade") or "").lower() != "websocket" or not key:
+            return self._json({"ok": False, "error": "expected a WebSocket"}, 400)
+        self.send_response(101, "Switching Protocols")
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", wslib.accept_key(key))
+        self.end_headers()
+        self.wfile.flush()
+        self.close_connection = True
+        try:
+            self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)    # taps go out at once
+        except OSError:
+            pass
+        with Handler.sessions_lock:
+            Handler.sessions[0] += 1
+        Session(wslib.WebSocket(self.rfile, self.wfile), Handler).run()
+
     def do_POST(self):
         u = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
@@ -208,6 +354,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True, "n": done})
         except (ValueError, KeyError, TypeError) as exc:
             return self._json({"ok": False, "error": str(exc)[:200]}, 400)
+
+
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        import sys as _sys
+        if isinstance(_sys.exc_info()[1], (BrokenPipeError, ConnectionResetError, wslib.Closed)):
+            return                                      # the phone left mid-picture: nothing to report
+        super().handle_error(request, client_address)
 
 
 def watchdog(controller: Controller, idle_s: float = 8.0):
@@ -237,7 +393,7 @@ def serve(port: int, demo: bool, host: str = "0.0.0.0"):
     Handler.frames = FrameSource(cap, inp.displays)
     Handler.cursor_in_image = bool(getattr(cap, "cursor_in_image", True))
     threading.Thread(target=watchdog, args=(Handler.controller,), daemon=True).start()
-    srv = ThreadingHTTPServer((host, port), Handler)
+    srv = Server((host, port), Handler)
     print(f"Mac Remote · {name} · port {port}")
     print("Buka di HP (salah satu, yang nyambung):")
     for a in addresses(port):

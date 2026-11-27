@@ -11,6 +11,25 @@ Kendaliin Mac mini dan MacBook Pro dari iPhone. Layar Mac di atas, keyboard MacB
 - **Dua Mac**: tombol nama Mac di pojok kanan atas = pindah Mac (kalau ada 2, sekali tap langsung pindah). ⚙ = daftar Mac, kualitas, fps, kecepatan trackpad, arah scroll.
 - **⤢**: layar penuh (keyboard disembunyiin), ⌨︎ buat balik.
 
+## Kenapa sekarang lebih cepat (v1.1)
+
+Belajar dari [Sill](https://github.com/Saffsanity/sill) (app native yang ngelakuin hal sama):
+
+| | v1.0 | v1.1 |
+| --- | --- | --- |
+| Koneksi | 1 request HTTP per gambar (nunggu bolak-balik tiap frame) | **1 WebSocket** yang terus kebuka: Mac langsung ngirim gambar baru |
+| Ambil layar | Screenshot per frame | **ScreenCaptureKit stream**: macOS cuma ngasih frame kalau layar berubah. Layar diam = 0 data |
+| Kalau jaringan lambat | Gambar antre | Maks 2 gambar di jalan, yang lama dibuang: selalu yang terbaru |
+| Pointer | Ikut gambar (telat) | Digambar di HP: gerak langsung pas jari gerak |
+| Ukuran gambar default | ~2000 px | 1280 px (⚙ > Kualitas: Hemat 960, Tajam 1920) |
+| Input | 1 request per kumpulan | Lewat socket yang sama, digabung per frame layar (60/detik) |
+
+Tes pakai jaringan lambat buatan (40 ms tiap arah, kira-kira Tailscale): 10.7 → 21 fps waktu layar terus berubah. Di Mac beneran stream ScreenCaptureKit nambah lagi (nggak screenshot tiap frame).
+
+Kalau jaringan nolak WebSocket, app otomatis balik ke cara lama.
+
+Masih belum semulus Sill: Sill ngirim video HEVC (chip video Mac) ke app native. Kalau mau yang paling mulus, pakai Sill.
+
 ## Pasang di tiap Mac (Mac mini dan MacBook Pro)
 
 Butuh macOS 14 ke atas (biar layar diambil lewat ScreenCaptureKit). Di macOS lebih lama tetap jalan, tapi pakai cara cadangan.
@@ -42,6 +61,8 @@ Buka di HP (salah satu, yang nyambung):
 Biarin jendela Terminal itu kebuka.
 
 Lakuin hal yang sama di MacBook Pro.
+
+**Update dari versi sebelumnya:** stop yang lagi jalan (Ctrl+C di jendela Terminal-nya), `git pull`, double-click `Mac Remote.command` lagi. Dia pasang paket baru sendiri. Di iPhone tinggal tutup app-nya (swipe up) dan buka lagi.
 
 ## Di iPhone
 
@@ -78,7 +99,8 @@ cd ~/Projects/src/mac-terminal && .venv/bin/python server.py --doctor
 | Layar cuma wallpaper / hitam | Izin Screen Recording belum ada buat Terminal |
 | Layar muncul, tapi klik / ketik nggak ngaruh | Izin Accessibility belum ada buat Terminal |
 | "Nggak nyambung ke …" | Server di Mac mati, atau Tailscale di iPhone / Mac mati |
-| Patah-patah | ⚙ > Kualitas: **Hemat**, atau Maks fps diturunin |
+| Patah-patah | ⚙ > Kualitas: **Hemat**. Pojok kanan atas nunjukin fps (`● live` = layar Mac lagi diam, nggak ada yang dikirim) |
+| Tulisan "mode lama" | Jaringan nolak WebSocket: masih jalan, tapi lebih lambat |
 | Scroll kebalik | ⚙ > Balik arah scroll |
 
 ## Coba tanpa Mac

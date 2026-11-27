@@ -19,7 +19,8 @@ const S = {
   display: 0,
   info: null,
 };
-const QUALITY = { low: { dpr: 1, q: 0.45 }, mid: { dpr: 1.5, q: 0.6 }, high: { dpr: 2, q: 0.72 } };
+// picture width in pixels (capped by the screen's own size) and JPEG quality
+const QUALITY = { low: { w: 960, q: 0.45 }, mid: { w: 1280, q: 0.55 }, high: { w: 1920, q: 0.65 } };
 const dev = () => S.devices[S.cur] || null;
 const api = (path, extra = "") => `${dev().url}${path}?token=${encodeURIComponent(dev().token)}${extra}`;
 
@@ -57,103 +58,206 @@ function switchDevice(i, quiet) {
   store.set("cur", i);
   S.display = 0;
   S.info = null;
-  frameState.since = "";
   $("#devName").textContent = dev().name;
   $("#label").textContent = dev().name;
-  loadInfo();
+  connect();
   if (!quiet) toast("→ " + dev().name);
   renderSheet();
 }
+function applyInfo(j) {
+  S.info = j;
+  dev().name = j.name;
+  store.set("devices", S.devices);
+  $("#devName").textContent = j.name;
+  $("#label").textContent = j.name;
+  $("#dispBtn").hidden = (j.displays || []).length < 2;
+  $("#dispBtn").textContent = "▣ " + (S.display + 1);
+  const d = (j.displays || [])[S.display];
+  if (d) { $("#screen").style.aspectRatio = `${d.w} / ${d.h}`; live.sw = d.w; live.sh = d.h; }
+}
 async function loadInfo() {
-  if (!dev()) return;
-  try {
-    const r = await fetch(api("/api/info"));
-    const j = await r.json();
-    if (!j.ok) throw new Error(j.error || r.status);
-    S.info = j;
-    dev().name = j.name;
-    store.set("devices", S.devices);
-    $("#devName").textContent = j.name;
-    $("#label").textContent = j.name;
-    $("#dispBtn").hidden = (j.displays || []).length < 2;
-    $("#dispBtn").textContent = "▣ " + (S.display + 1);
-    const d = (j.displays || [])[S.display];
-    if (d) $("#screen").style.aspectRatio = `${d.w} / ${d.h}`;
-    $("#cursor").style.display = j.cursorInImage ? "none" : "block";
-  } catch (e) {
-    setStatus(`Nggak nyambung ke ${dev().name}: ${e.message}. Server di Mac nyala? Tailscale nyala?`);
-  }
+  const r = await fetch(api("/api/info"));
+  const j = await r.json();
+  if (!j.ok) throw new Error(j.error || r.status);
+  applyInfo(j);
 }
 
-// ---------------------------------------------------------------- screen frames
-const frameState = { since: "", frames: 0, t0: performance.now(), lastUrl: null, okAt: 0 };
+// ---------------------------------------------------------------- live connection
+// One WebSocket that stays open: the Mac pushes each new picture as soon as it has one, only when the screen
+// changed, and at most two ahead of what this phone has shown (older ones are dropped, never queued). Taps and
+// keys go back on the same socket. If a network refuses WebSockets, it falls back to asking picture by picture.
+const live = { ws: null, gen: 0, mode: "ws", fails: 0, frames: 0, t0: performance.now(), sw: 0, sh: 0,
+  cursor: { x: 0.5, y: 0.5 }, localAt: 0, drawn: 0, got: 0 };
+const canvas = $("#frame");
+const ctx2d = canvas.getContext("2d");
 function setStatus(msg) {
   const s = $("#status");
   if (msg) { s.textContent = msg; s.classList.remove("hide"); } else s.classList.add("hide");
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-async function frameLoop() {
-  const img = $("#frame");
-  for (;;) {
-    if (!dev() || document.hidden) { await sleep(400); continue; }
+function frameSpec() {
+  const qq = QUALITY[S.quality] || QUALITY.mid;
+  const w = Math.round(Math.min(qq.w, $("#screen").clientWidth * (window.devicePixelRatio || 1)));
+  return { w: Math.max(320, w), q: qq.q };
+}
+function sendCfg() {
+  const ws = live.ws;
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: "cfg", ...frameSpec(), fps: S.fps, d: S.display }));
+}
+function wsUrl() {
+  const u = new URL(dev().url);
+  return `${u.protocol === "https:" ? "wss:" : "ws:"}//${u.host}/api/ws?token=${encodeURIComponent(dev().token)}`;
+}
+function disconnect() {
+  live.gen++;
+  if (live.ws) { const w = live.ws; live.ws = null; w.onclose = null; try { w.close(); } catch {} }
+}
+function connect() {
+  disconnect();
+  const gen = live.gen;
+  if (!dev() || document.hidden) return;
+  if (live.mode === "poll") { pollLoop(gen); return; }
+  setStatus(`Nyambung ke ${dev().name}…`);
+  let opened = false;
+  let ws;
+  try { ws = new WebSocket(wsUrl()); } catch { live.mode = "poll"; return connect(); }
+  ws.binaryType = "arraybuffer";
+  live.ws = ws;
+  ws.onopen = () => { opened = true; live.fails = 0; sendCfg(); flushInput(); };
+  ws.onmessage = e => {
+    if (gen !== live.gen) return;
+    if (typeof e.data === "string") onText(JSON.parse(e.data));
+    else onFrame(e.data, ws);
+  };
+  ws.onclose = () => {
+    if (gen !== live.gen) return;
+    live.ws = null;
+    if (!opened && ++live.fails >= 2) {
+      live.mode = "poll";
+      toast("WebSocket nggak bisa di jaringan ini: pakai mode lama (lebih lambat)", 4000);
+      return connect();
+    }
+    setStatus(`Putus dari ${dev().name}, nyambung lagi…`);
+    setTimeout(() => { if (gen === live.gen) connect(); }, opened ? 500 : 1500);
+  };
+}
+function onText(m) {
+  if (m.t === "info") applyInfo({ ok: true, ...m });
+  else if (m.t === "cursor") setCursor(m.c);
+  else if (m.t === "error") setStatus(`${dev().name}: ${m.error}`);
+}
+async function drawJpeg(blob) {
+  const bmp = await createImageBitmap(blob);
+  if (canvas.width !== bmp.width || canvas.height !== bmp.height) { canvas.width = bmp.width; canvas.height = bmp.height; }
+  ctx2d.drawImage(bmp, 0, 0);
+  if (bmp.close) bmp.close();
+}
+async function onFrame(buf, ws) {
+  const n = ++live.got;
+  const hl = new DataView(buf).getUint32(0);
+  const head = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, hl)));
+  try {
+    const blob = new Blob([new Uint8Array(buf, 4 + hl)], { type: "image/jpeg" });
+    if (n > live.drawn) {                             // a newer picture may have decoded first: never go back
+      await drawJpeg(blob);
+      live.drawn = Math.max(live.drawn, n);
+    }
+  } catch {}
+  if (ws.readyState === 1) ws.send('{"t":"ack"}');   // ready for the next one
+  if (head.sw) { live.sw = head.sw; live.sh = head.sh; }
+  setCursor(head.c);
+  countFrame();
+  setStatus("");
+}
+function countFrame() { live.frames++; }
+setInterval(() => {
+  const now = performance.now();
+  const fps = Math.round(live.frames * 1000 / (now - live.t0));
+  live.frames = 0;
+  live.t0 = now;
+  $("#fps").textContent = !dev() ? "" : fps ? `${fps} fps` : (live.ws && live.ws.readyState === 1 ? "● live" : "");
+}, 1000);
+
+// the pointer is drawn here, so it moves the moment the finger does; the Mac's position corrects it
+function placeCursor() {
+  const c = $("#cursor");
+  c.style.left = live.cursor.x * 100 + "%";
+  c.style.top = live.cursor.y * 100 + "%";
+}
+function setCursor(c) {
+  if (!c || performance.now() - live.localAt < 350) return;       // our own move is still on its way
+  live.cursor = { x: c[0], y: c[1] };
+  placeCursor();
+}
+function predict(ev) {
+  if (ev.t === "move" && live.sw) {
+    live.cursor.x = Math.min(1, Math.max(0, live.cursor.x + ev.dx / live.sw));
+    live.cursor.y = Math.min(1, Math.max(0, live.cursor.y + ev.dy / live.sh));
+  } else if (ev.t === "moveTo") live.cursor = { x: ev.x, y: ev.y };
+  else return;
+  live.localAt = performance.now();
+  placeCursor();
+}
+
+// the old way (a network that blocks WebSockets): ask for each picture
+async function pollLoop(gen) {
+  let since = "";
+  try { await loadInfo(); } catch (e) { setStatus(`Nggak nyambung ke ${dev().name}: ${e.message}`); }
+  while (gen === live.gen) {
+    if (document.hidden) { await sleep(400); continue; }
     const t0 = performance.now();
-    const qq = QUALITY[S.quality] || QUALITY.mid;
-    const w = Math.round(Math.min(3200, $("#screen").clientWidth * Math.min(window.devicePixelRatio || 1, qq.dpr)));
+    const { w, q } = frameSpec();
     try {
-      const r = await fetch(api("/api/frame", `&w=${w}&q=${qq.q}&d=${S.display}&since=${frameState.since}`), { cache: "no-store" });
+      const r = await fetch(api("/api/frame", `&w=${w}&q=${q}&d=${S.display}&since=${since}`), { cache: "no-store" });
       if (r.status === 200) {
-        const blob = await r.blob();
-        const url = URL.createObjectURL(blob);
-        img.src = url;
-        try { await img.decode(); } catch {}
-        if (frameState.lastUrl) URL.revokeObjectURL(frameState.lastUrl);
-        frameState.lastUrl = url;
-        frameState.since = r.headers.get("X-Frame") || "";
-        frameState.frames++;
+        await drawJpeg(await r.blob());
+        since = r.headers.get("X-Frame") || "";
+        countFrame();
       } else if (r.status !== 204) {
         const j = await r.json().catch(() => ({}));
         throw new Error(j.error || "HTTP " + r.status);
       }
-      const c = (r.headers.get("X-Cursor") || "").split(",").map(Number);
-      if (c.length === 2 && isFinite(c[0])) { const cur = $("#cursor"); cur.style.left = c[0] * 100 + "%"; cur.style.top = c[1] * 100 + "%"; }
-      frameState.okAt = performance.now();
+      setCursor((r.headers.get("X-Cursor") || "").split(",").map(Number));
       setStatus("");
     } catch (e) {
       setStatus(`Nggak nyambung ke ${dev().name}: ${e.message}`);
       await sleep(1200);
-    }
-    const now = performance.now();
-    if (now - frameState.t0 > 1000) {
-      $("#fps").textContent = `${Math.round(frameState.frames * 1000 / (now - frameState.t0))} fps`;
-      frameState.frames = 0;
-      frameState.t0 = now;
     }
     const wait = 1000 / S.fps - (performance.now() - t0);
     if (wait > 0) await sleep(wait);
   }
 }
 
-// ---------------------------------------------------------------- input queue
-// Moves / scrolls that pile up while a request is on its way are merged into one, so the pointer never lags behind.
+// ---------------------------------------------------------------- input
+// Moves and scrolls are merged per screen refresh (60 a second at most); everything else goes at once, in order.
 const queue = [];
-let sending = false;
+let rafPending = false, httpSending = false;
 function send(ev) {
   if (!dev()) return;
+  predict(ev);
   const last = queue[queue.length - 1];
   if (last && (ev.t === "move" || ev.t === "scroll") && last.t === ev.t) { last.dx += ev.dx; last.dy += ev.dy; }
   else queue.push(ev);
-  flush();
+  if (ev.t === "move" || ev.t === "scroll") {
+    if (!rafPending) { rafPending = true; requestAnimationFrame(() => { rafPending = false; flushInput(); }); }
+  } else flushInput();
 }
-async function flush() {
-  if (sending || !queue.length) return;
-  sending = true;
+function flushInput() {
+  if (!queue.length) return;
+  const ws = live.ws;
+  if (ws && ws.readyState === 1) { ws.send(JSON.stringify({ t: "input", ev: queue.splice(0) })); return; }
+  if (live.mode === "poll") httpFlush();
+}
+async function httpFlush() {
+  if (httpSending || !queue.length) return;
+  httpSending = true;
   const batch = queue.splice(0);
   try {
     const r = await fetch(api("/api/input"), { method: "POST", headers: { "Content-Type": "text/plain" }, body: JSON.stringify(batch) });
     if (!r.ok) { const j = await r.json().catch(() => ({})); toast("✗ " + (j.error || r.status)); }
   } catch (e) { toast("✗ input: " + e.message); }
-  sending = false;
-  if (queue.length) flush();
+  httpSending = false;
+  if (queue.length) httpFlush();
 }
 
 // ---------------------------------------------------------------- keyboard
@@ -488,8 +592,8 @@ function bind() {
   $("#dispBtn").onclick = () => {
     const n = (S.info?.displays || []).length || 1;
     S.display = (S.display + 1) % n;
-    frameState.since = "";
-    loadInfo();
+    applyInfo(S.info);
+    sendCfg();
   };
   const full = on => { document.body.classList.toggle("full", on); $("#unfull").hidden = !on; };
   $("#fullBtn").onclick = () => full(true);
@@ -523,13 +627,18 @@ function bind() {
     store.set(key, S[key]);
     after && after();
   });
-  setting("#setQuality", "quality", String, () => (frameState.since = ""));
-  setting("#setFps", "fps", Number);
+  setting("#setQuality", "quality", String, sendCfg);
+  setting("#setFps", "fps", Number, sendCfg);
   setting("#setFrow", "frow", Boolean, buildKeyboard);
   setting("#setSpeed", "speed", Number);
   setting("#setScroll", "scroll", Number);
   setting("#setInvert", "invert", Boolean);
-  document.addEventListener("visibilitychange", () => { if (document.hidden) releaseHeld(); });
+  // app in the background: let go of keys, close the connection (the Mac stops capturing); back: reconnect
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) { releaseHeld(); disconnect(); } else if (dev()) connect();
+  });
+  let rz = null;
+  window.addEventListener("resize", () => { clearTimeout(rz); rz = setTimeout(sendCfg, 300); });
   // stop iOS from scrolling / zooming the page itself
   document.addEventListener("touchmove", e => { if (!e.target.closest("#sheet")) e.preventDefault(); }, { passive: false });
   document.addEventListener("gesturestart", e => e.preventDefault());
@@ -541,4 +650,4 @@ imeSetup();
 bind();
 if (dev()) switchDevice(S.cur, true);
 else { setStatus("Belum ada Mac. Jalanin python3 server.py di Mac, buka link yang dia print di HP ini."); $("#sheet").hidden = false; renderSheet(); }
-frameLoop();
+placeCursor();

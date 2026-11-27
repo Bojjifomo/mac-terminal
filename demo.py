@@ -64,7 +64,7 @@ class DemoInput:
 
 
 class DemoCapture:
-    cursor_in_image = True
+    cursor_in_image = False                           # like the Mac: the phone draws the pointer
 
     def __init__(self, inp: DemoInput):
         self.inp = inp
@@ -74,29 +74,29 @@ class DemoCapture:
         w = max(64, min(int(width), W * 2))
         h = int(round(w * H / W))
         s = w / W
-        im = Image.new("RGB", (w, h))
+        if getattr(self, "_wall", (0,))[0] != w:       # wallpaper, drawn once per size
+            wall = Image.new("RGB", (w, h))
+            wd = ImageDraw.Draw(wall)
+            for i in range(h):
+                t = i / h
+                wd.line([(0, i), (w, i)], fill=(int(30 + 60 * t), int(40 + 30 * t), int(90 + 80 * (1 - t))))
+            self._wall = (w, wall)
+        im = self._wall[1].copy()
         d = ImageDraw.Draw(im)
-        for i in range(h):                             # wallpaper
-            t = i / h
-            d.line([(0, i), (w, i)], fill=(int(30 + 60 * t), int(40 + 30 * t), int(90 + 80 * (1 - t))))
         d.rectangle([0, 0, w, 24 * s], fill=(235, 235, 240))  # menu bar
         d.text((14 * s, 5 * s), "  Finder   File   Edit   View   Go   Window   Help", fill=(20, 20, 20))
-        d.text((w - 120 * s, 5 * s), time.strftime("%a %H:%M:%S"), fill=(20, 20, 20))
+        d.text((w - 120 * s, 5 * s), time.strftime("%a %H:%M"), fill=(20, 20, 20))
         x0, y0, x1, y1 = 160 * s, 110 * s, 1100 * s, 720 * s  # notes window
         d.rounded_rectangle([x0, y0, x1, y1], radius=12 * s, fill=(250, 250, 250))
         d.rounded_rectangle([x0, y0, x1, y0 + 34 * s], radius=12 * s, fill=(225, 225, 230))
         for k, c in enumerate([(255, 95, 87), (254, 188, 46), (40, 200, 64)]):
             cx = x0 + (20 + 20 * k) * s
             d.ellipse([cx - 6 * s, y0 + 11 * s, cx + 6 * s, y0 + 23 * s], fill=c)
-        d.text((x0 + 90 * s, y0 + 11 * s), "Notes — demo Mac Remote", fill=(60, 60, 60))
+        d.text((x0 + 90 * s, y0 + 11 * s), f"Notes — demo Mac Remote · {len(self.inp.text_buf)} huruf", fill=(60, 60, 60))
         lines = self.inp.text_buf.split("\n")[-22:]
         for i, line in enumerate(lines):
             d.text((x0 + 24 * s, y0 + (54 + i * 24) * s), line[-120:], fill=(25, 25, 25))
         d.rounded_rectangle([w / 2 - 300 * s, h - 70 * s, w / 2 + 300 * s, h - 12 * s], radius=16 * s, fill=(60, 60, 70))
-        px, py = self.inp.x * s, self.inp.y * s        # pointer
-        d.polygon([(px, py), (px, py + 22 * s), (px + 6 * s, py + 17 * s), (px + 11 * s, py + 27 * s),
-                   (px + 15 * s, py + 25 * s), (px + 10 * s, py + 15 * s), (px + 17 * s, py + 15 * s)],
-                  fill=(0, 0, 0), outline=(255, 255, 255))
         buf = io.BytesIO()
         im.save(buf, "JPEG", quality=int(max(10, min(95, quality * 100))))
         return buf.getvalue(), w, h

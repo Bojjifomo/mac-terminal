@@ -139,8 +139,8 @@ def _wait(start, timeout=5.0):
 
 
 class SCKCapture:
-    """ScreenCaptureKit screenshots (macOS 14+): scaled on the GPU, cursor included."""
-    cursor_in_image = True
+    """ScreenCaptureKit screenshots (macOS 14+), one per frame: scaled on the GPU. The phone draws the pointer."""
+    cursor_in_image = False
 
     def __init__(self):
         import ScreenCaptureKit as SCK
@@ -168,11 +168,128 @@ class SCKCapture:
         cfg = self.SCK.SCStreamConfiguration.alloc().init()
         cfg.setWidth_(w)
         cfg.setHeight_(h)
-        cfg.setShowsCursor_(True)
+        cfg.setShowsCursor_(False)
         img, err = _wait(lambda hnd: self.SCK.SCScreenshotManager.captureImageWithFilter_configuration_completionHandler_(filt, cfg, hnd))
         if err is not None or img is None:
             raise RuntimeError(f"capture failed ({err})")
         return _jpeg(img, quality), w, h
+
+
+class SCKStreamCapture:
+    """ScreenCaptureKit stream (macOS 13+): macOS hands over a frame only when the screen changed, already scaled on
+    the GPU; the newest one is JPEG-encoded (Core Image, GPU) only when the phone is ready for it. This is how Sill
+    and other remote apps capture; a screenshot per frame (SCKCapture) is several times slower."""
+    cursor_in_image = False
+
+    def __init__(self):
+        import CoreMedia
+        import libdispatch
+        import ScreenCaptureKit as SCK
+        from Foundation import NSObject
+        import objc
+
+        self.SCK, self.CM = SCK, CoreMedia
+        self.lock = threading.Lock()
+        self.new_frame = threading.Condition(self.lock)
+        self.key = None                                 # (display id, width, fps) of the running stream
+        self.stream = None
+        self.latest = None                              # CIImage of the newest complete frame
+        self.version = 0
+        self.encoded = (-1, None)                       # (version, (jpeg, w, h)) last encoded
+        self.size = (0, 0)
+        self.ci = Q.CIContext.contextWithOptions_(None)
+        self.cs = Q.CGColorSpaceCreateDeviceRGB()
+        self.queue = libdispatch.dispatch_queue_create(b"mac-remote.frames", None)
+        owner = self
+
+        class _Output(NSObject, protocols=[objc.protocolNamed("SCStreamOutput")]):
+            def stream_didOutputSampleBuffer_ofType_(self, stream, sbuf, kind):
+                owner._on_sample(sbuf, kind)
+
+        self.output = _Output.alloc().init()
+
+    def _on_sample(self, sbuf, kind):
+        if kind != self.SCK.SCStreamOutputTypeScreen:
+            return
+        try:
+            atts = self.CM.CMSampleBufferGetSampleAttachmentsArray(sbuf, False)
+            status = atts[0].get(self.SCK.SCStreamFrameInfoStatus) if atts else None
+            if status is not None and int(status) != int(self.SCK.SCFrameStatusComplete):
+                return                                  # idle / blank: the screen did not change
+            pix = self.CM.CMSampleBufferGetImageBuffer(sbuf)
+            if pix is None:
+                return
+            img = Q.CIImage.imageWithCVPixelBuffer_(pix)
+        except Exception:                               # noqa: BLE001 - a bad frame is skipped, never fatal
+            return
+        with self.lock:
+            self.latest = img
+            self.version += 1
+            self.new_frame.notify_all()
+
+    def _start(self, display_id: int, width: int, fps: int):
+        self._stop()
+        content, err = _wait(lambda h: self.SCK.SCShareableContent.getShareableContentWithCompletionHandler_(h))
+        if err is not None or content is None:
+            raise PermissionError(f"Screen Recording not allowed ({err})")
+        disp = next((d for d in content.displays() if int(d.displayID()) == int(display_id)), None)
+        if disp is None:
+            raise LookupError(f"display {display_id} not found")
+        dw, dh = int(disp.width()), int(disp.height())
+        w = max(64, min(int(width), dw * 2))
+        h = max(40, int(round(w * dh / dw)))
+        cfg = self.SCK.SCStreamConfiguration.alloc().init()
+        cfg.setWidth_(w)
+        cfg.setHeight_(h)
+        cfg.setShowsCursor_(False)
+        cfg.setQueueDepth_(5)
+        cfg.setMinimumFrameInterval_(self.CM.CMTimeMake(1, int(fps)))
+        filt = self.SCK.SCContentFilter.alloc().initWithDisplay_excludingWindows_(disp, [])
+        stream = self.SCK.SCStream.alloc().initWithFilter_configuration_delegate_(filt, cfg, None)
+        res = stream.addStreamOutput_type_sampleHandlerQueue_error_(self.output, self.SCK.SCStreamOutputTypeScreen, self.queue, None)
+        ok = res[0] if isinstance(res, tuple) else res
+        if not ok:
+            raise RuntimeError(f"stream output refused ({res})")
+        (err,) = _wait(lambda h: stream.startCaptureWithCompletionHandler_(h))
+        if err is not None:
+            raise RuntimeError(f"stream did not start ({err})")
+        with self.lock:
+            self.stream, self.key, self.size = stream, (display_id, w, fps), (w, h)
+            self.latest, self.encoded = None, (-1, None)
+
+    def _stop(self):
+        st, self.stream, self.key = self.stream, None, None
+        if st is not None:
+            try:
+                _wait(lambda h: st.stopCaptureWithCompletionHandler_(h), timeout=3)
+            except Exception:                           # noqa: BLE001
+                pass
+
+    def idle(self):
+        """No phone is watching: stop capturing (no CPU / GPU spent)."""
+        self._stop()
+
+    def grab(self, display_id: int, width: int, quality: float, fps: int = 60) -> tuple[bytes, int, int]:
+        d = next((x for x in displays() if x["id"] == int(display_id)), None)
+        w = max(64, min(int(width), int((d["w"] if d else width) * 2)))
+        if self.key is None or self.key[0] != int(display_id) or abs(self.key[1] - w) > 8:
+            self._start(int(display_id), w, max(fps, 30))
+        with self.lock:
+            if self.latest is None:
+                self.new_frame.wait(2.0)                # first frame after (re)starting
+            if self.latest is None:
+                raise RuntimeError("the screen stream sent no frame")
+            ver, img = self.version, self.latest
+            if self.encoded[0] == ver:
+                return self.encoded[1]                  # nothing new: same bytes, the server skips it
+        data = self.ci.JPEGRepresentationOfImage_colorSpace_options_(
+            img, self.cs, {Q.kCGImageDestinationLossyCompressionQuality: float(quality)})
+        if data is None:
+            raise RuntimeError("JPEG encode failed")
+        out = (bytes(data), self.size[0], self.size[1])
+        with self.lock:
+            self.encoded = (ver, out)
+        return out
 
 
 class CGCapture:
@@ -191,18 +308,26 @@ class CGCapture:
 
 
 def make_capture():
-    try:
-        cap = SCKCapture()
-        cap.grab(_display_ids()[0], 320, 0.5)
-        return cap
-    except Exception as exc:                            # noqa: BLE001 - any failure falls back
-        first = exc
+    errors = []
+    for cls in (SCKStreamCapture, SCKCapture):          # stream first (fast), screenshots if the stream won't run
+        cap = None
+        try:
+            cap = cls()
+            cap.grab(_display_ids()[0], 640, 0.5)
+            if hasattr(cap, "idle"):
+                cap.idle()                              # started again when a phone connects
+            return cap
+        except Exception as exc:                        # noqa: BLE001 - any failure falls back
+            errors.append(f"{cls.__name__}: {exc}")
+            if cap is not None and hasattr(cap, "idle"):
+                cap.idle()
+    first = " · ".join(errors)
     try:
         cap = CGCapture()
         cap.grab(_display_ids()[0], 320, 0.5)
         return cap
     except Exception as exc:                            # noqa: BLE001
-        raise RuntimeError(f"no way to capture the screen: ScreenCaptureKit: {first} · CoreGraphics: {exc}") from exc
+        raise RuntimeError(f"no way to capture the screen: {first} · CoreGraphics: {exc}") from exc
 
 
 # ---------------------------------------------------------------- permissions
