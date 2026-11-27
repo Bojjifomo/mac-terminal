@@ -16,6 +16,9 @@ const S = {
   speed: store.get("speed", 1.6),
   scroll: store.get("scroll", 1.4),
   invert: store.get("invert", false),
+  loupe: store.get("loupe", "auto"),            // magnifier: auto | on | off
+  zoom: store.get("zoom", 3),
+  precise: store.get("precise", true),
   display: 0,
   info: null,
 };
@@ -142,7 +145,8 @@ function connect() {
   };
 }
 function onText(m) {
-  if (m.t === "info") applyInfo({ ok: true, ...m });
+  if (m.t === "info") { applyInfo({ ok: true, ...m }); loupe.serverZoom = !!m.zoom; loupe.sentOn = false; }
+  else if (m.t === "zoomoff") loupe.serverZoom = false;
   else if (m.t === "cursor") setCursor(m.c);
   else if (m.t === "error") setStatus(`${dev().name}: ${m.error}`);
 }
@@ -153,9 +157,10 @@ async function drawJpeg(blob) {
   if (bmp.close) bmp.close();
 }
 async function onFrame(buf, ws) {
-  const n = ++live.got;
   const hl = new DataView(buf).getUint32(0);
   const head = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, hl)));
+  if (head.t === "zoom") return onZoom(head, new Uint8Array(buf, 4 + hl), ws);
+  const n = ++live.got;
   try {
     const blob = new Blob([new Uint8Array(buf, 4 + hl)], { type: "image/jpeg" });
     if (n > live.drawn) {                             // a newer picture may have decoded first: never go back
@@ -188,6 +193,8 @@ function setCursor(c) {
   if (!c || performance.now() - live.localAt < 350) return;       // our own move is still on its way
   live.cursor = { x: c[0], y: c[1] };
   placeCursor();
+paintLoupeBtn();
+requestAnimationFrame(loupeTick);
 }
 function predict(ev) {
   if (ev.t === "move" && live.sw) {
@@ -426,6 +433,8 @@ function padDown(e) {
     pad.armDrag = now - pad.lastTapEnd < 280;            // tap, then touch again and move = drag
     clearTimeout(pad.holdTimer);
     pad.holdTimer = setTimeout(() => { if (pad.pts.size === 1 && pad.moved < 6) startDrag(); }, 480);
+    // finger resting on the pad = about to aim: the magnifier comes up (auto)
+    setTimeout(() => { if (pad.pts.size === 1 && pad.moved < 6) aimSoon(900); }, 200);
   }
   pad.pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
   pad.max = Math.max(pad.max, pad.pts.size);
@@ -448,7 +457,10 @@ function padMove(e) {
   if (n === 1) {
     if (pad.armDrag && !pad.dragging && pad.moved > 4) startDrag();
     const v = dist / dt;                                   // css px per ms
-    const gain = S.speed * (1 + Math.min(v * 1.3, 4));      // pointer acceleration
+    let gain = S.speed * (1 + Math.min(v * 1.3, 4));        // pointer acceleration
+    if (v < 0.35) aimSoon(700);                             // slow = aiming: show the magnifier (auto)
+    else if (v > 1.2) loupe.until = 0;                       // a fast sweep across the screen: out of the way
+    if (S.precise && loupeShown()) gain = S.speed * 0.45 * (1 + Math.min(v * 0.6, 1.5));   // fine steps while it shows
     send({ t: "move", dx: dx * gain, dy: dy * gain });
   } else if (n === 2) {
     const k = S.scroll * 2 * (S.invert ? -1 : 1);
@@ -482,24 +494,34 @@ function padUp(e) {
 }
 
 // ---------------------------------------------------------------- the screen itself: tap = click there
-const scr = { id: null, x: 0, y: 0, t: 0, dragging: false, timer: null, long: false };
+const scr = { id: null, x: 0, y: 0, t: 0, dragging: false, timer: null, aim: false };
 function screenPoint(e) {
   const r = $("#frame").getBoundingClientRect();
-  return { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height };
+  return { x: Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), y: Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)) };
 }
+// tap = click there · move right away = drag · hold, then slide = aim with the magnifier above your finger, lift = click
 function scrDown(e) {
   if (scr.id !== null) return;
   e.preventDefault();
   capture($("#screen"), e.pointerId);
-  Object.assign(scr, { id: e.pointerId, x: e.clientX, y: e.clientY, t: performance.now(), dragging: false, long: false });
+  Object.assign(scr, { id: e.pointerId, x: e.clientX, y: e.clientY, t: performance.now(), dragging: false, aim: false });
   const p = screenPoint(e);
   send({ t: "moveTo", x: p.x, y: p.y, d: S.display });
-  scr.timer = setTimeout(() => { scr.long = true; }, 550);
+  scr.timer = setTimeout(() => {
+    if (scr.id === null || scr.dragging || S.loupe === "off") return;
+    scr.aim = true;
+    loupe.finger = { x: scr.x, y: scr.y };
+  }, 300);
 }
 function scrMove(e) {
   if (e.pointerId !== scr.id) return;
   e.preventDefault();
   const p = screenPoint(e);
+  if (scr.aim) {
+    loupe.finger = { x: e.clientX, y: e.clientY };
+    send({ t: "moveTo", x: p.x, y: p.y, d: S.display });
+    return;
+  }
   if (!scr.dragging && Math.hypot(e.clientX - scr.x, e.clientY - scr.y) > 8) {
     scr.dragging = true;
     clearTimeout(scr.timer);
@@ -511,10 +533,112 @@ function scrUp(e) {
   if (e.pointerId !== scr.id) return;
   scr.id = null;
   clearTimeout(scr.timer);
+  const wasAim = scr.aim;
+  scr.aim = false;
+  loupe.finger = null;
+  if (wasAim) aimSoon(500);                                   // keep it a moment: you see where the click went
   if (e.type === "pointercancel") { if (scr.dragging) send({ t: "up", b: "left" }); return; }
   if (scr.dragging) send({ t: "up", b: "left", mods: activeMods() });
-  else send({ t: "click", b: scr.long ? "right" : "left", mods: activeMods() });
+  else send({ t: "click", b: "left", mods: activeMods() });
   afterKey();
+}
+
+// ---------------------------------------------------------------- magnifier
+// A round loupe around the pointer, with a cross on the exact spot a click lands. Its picture is a sharp piece cut
+// from the Mac's own screen (Retina pixels, sent on its own track at up to 20 a second); until one arrives, or on an
+// older server, it magnifies the stream picture.
+const loupe = { serverZoom: false, sentOn: false, sentSide: 0, until: 0, finger: null, sharp: null, sharpR: null,
+  sharpAt: 0, shown: false };
+const lctx = $("#loupeC").getContext("2d");
+function aimSoon(ms) { if (S.loupe === "auto") loupe.until = Math.max(loupe.until, performance.now() + ms); }
+function loupeShown() { return loupe.shown; }
+function loupeSize() { return Math.round(Math.min(180, Math.max(104, $("#screen").clientHeight * 0.44))); }
+async function onZoom(head, bytes, ws) {
+  try {
+    const bmp = await createImageBitmap(new Blob([bytes], { type: "image/jpeg" }));
+    if (loupe.sharp && loupe.sharp.close) loupe.sharp.close();
+    loupe.sharp = bmp;
+    loupe.sharpR = head.r;
+    loupe.sharpAt = performance.now();
+  } catch {}
+  if (ws.readyState === 1) ws.send('{"t":"zack"}');
+}
+// drawImage with a source area that may run past the image's edge (pointer near a screen edge): clip it, and
+// draw only that part, in the right place (Safari draws nothing for an out-of-bounds source)
+function drawClipped(img, iw, ih, sx, sy, sw, sh, L) {
+  const x0 = Math.max(0, sx), y0 = Math.max(0, sy), x1 = Math.min(iw, sx + sw), y1 = Math.min(ih, sy + sh);
+  if (x1 <= x0 || y1 <= y0) return;
+  const kx = L / sw, ky = L / sh;
+  lctx.drawImage(img, x0, y0, x1 - x0, y1 - y0, (x0 - sx) * kx, (y0 - sy) * ky, (x1 - x0) * kx, (y1 - y0) * ky);
+}
+function drawArrow(c, x, y, k) {
+  c.save();
+  c.translate(x, y);
+  c.scale(k, k);
+  c.beginPath();
+  c.moveTo(0, 0); c.lineTo(0, 16); c.lineTo(4, 12.5); c.lineTo(7, 19); c.lineTo(9.6, 17.8); c.lineTo(6.8, 11.5); c.lineTo(12, 11.5);
+  c.closePath();
+  c.fillStyle = "#000"; c.strokeStyle = "#fff"; c.lineWidth = 1.2;
+  c.fill(); c.stroke();
+  c.restore();
+}
+function loupeTick() {
+  requestAnimationFrame(loupeTick);
+  const now = performance.now();
+  const ready = dev() && live.sw && canvas.width > 1;
+  // a finger still resting on the trackpad keeps it up once it showed
+  if (S.loupe === "auto" && loupe.shown && pad.pts.size === 1 && !pad.dragging && now < loupe.until + 50) loupe.until = now + 400;
+  const show = !!ready && S.loupe !== "off" && (S.loupe === "on" || scr.aim || now < loupe.until);
+  const el = $("#loupe");
+  if (show !== loupe.shown) { loupe.shown = show; el.hidden = !show; }
+  const size = loupeSize();
+  const scrEl = $("#screen"), sr = scrEl.getBoundingClientRect(), fr = canvas.getBoundingClientRect();
+  // what the loupe covers, in Mac points and as a share of the screen
+  const sidePts = (size / S.zoom) * (live.sw / Math.max(1, fr.width));
+  const want = show && loupe.serverZoom && live.ws && live.ws.readyState === 1;
+  if (want !== loupe.sentOn || (want && Math.abs(sidePts - loupe.sentSide) > 2)) {
+    live.ws && live.ws.readyState === 1 && live.ws.send(JSON.stringify({ t: "zoom", on: want, side: sidePts,
+      px: Math.min(720, Math.round(size * (window.devicePixelRatio || 1))) }));
+    loupe.sentOn = want;
+    loupe.sentSide = sidePts;
+  }
+  if (!show) return;
+  // place it: above the finger when aiming on the screen, otherwise above the pointer; below when there is no room
+  const ax = loupe.finger ? loupe.finger.x - sr.left : fr.left - sr.left + live.cursor.x * fr.width;
+  const ay = loupe.finger ? loupe.finger.y - sr.top : fr.top - sr.top + live.cursor.y * fr.height;
+  const gap = loupe.finger ? 46 : 22;
+  let cy = ay - size / 2 - gap;
+  if (cy - size / 2 < 2) cy = ay + size / 2 + gap;
+  const cx = Math.min(sr.width - size / 2 - 2, Math.max(size / 2 + 2, ax));
+  cy = Math.min(sr.height - size / 2 - 2, Math.max(size / 2 + 2, cy));
+  el.style.setProperty("--lz", size + "px");
+  el.style.left = cx + "px";
+  el.style.top = cy + "px";
+  // draw: the view is centred on the pointer (as the phone predicts it, so it follows the finger at once)
+  const L = 300, vw = sidePts / live.sw, vh = sidePts / live.sh;
+  const vx = live.cursor.x - vw / 2, vy = live.cursor.y - vh / 2;
+  lctx.fillStyle = "#000";
+  lctx.fillRect(0, 0, L, L);
+  lctx.imageSmoothingEnabled = true;
+  lctx.imageSmoothingQuality = "high";
+  const R = loupe.sharpR, img = loupe.sharp;
+  const sharp = img && R && now - loupe.sharpAt < 700 && vx >= R[0] - vw * 0.35 && vy >= R[1] - vh * 0.35
+    && vx + vw <= R[0] + R[2] + vw * 0.35 && vy + vh <= R[1] + R[3] + vh * 0.35;
+  if (sharp) {
+    const kx = img.width / R[2], ky = img.height / R[3];
+    drawClipped(canvas, canvas.width, canvas.height, vx * canvas.width, vy * canvas.height, vw * canvas.width, vh * canvas.height, L);
+    drawClipped(img, img.width, img.height, (vx - R[0]) * kx, (vy - R[1]) * ky, vw * kx, vh * ky, L);
+  } else {
+    drawClipped(canvas, canvas.width, canvas.height, vx * canvas.width, vy * canvas.height, vw * canvas.width, vh * canvas.height, L);
+  }
+  drawArrow(lctx, L / 2, L / 2, Math.min(3, Math.max(1.2, S.zoom * 0.55)));
+  el.querySelector(".lz").textContent = `${S.zoom}×${sharp ? " · tajam" : ""}`;
+}
+function paintLoupeBtn() {
+  const b = $("#loupeBtn");
+  b.classList.toggle("on", S.loupe === "on");
+  b.classList.toggle("auto", S.loupe === "auto");
+  b.title = { auto: "Kaca pembesar: auto (muncul pas ngepas)", on: "Kaca pembesar: selalu nyala", off: "Kaca pembesar: mati" }[S.loupe];
 }
 
 // ---------------------------------------------------------------- phone keyboard (Aa): fast text, dictation
@@ -552,6 +676,9 @@ function renderSheet() {
   $("#setSpeed").value = S.speed;
   $("#setScroll").value = S.scroll;
   $("#setInvert").checked = S.invert;
+  $("#setLoupe").value = S.loupe;
+  $("#setZoom").value = String(S.zoom);
+  $("#setPrecise").checked = S.precise;
 }
 const escapeHtml = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
@@ -580,6 +707,13 @@ function bind() {
     const b = e.target.closest("[data-act]");
     if (!b) return;
     if (b.dataset.act === "ime") { b.classList.add("on"); $("#ime").focus(); return; }
+    if (b.dataset.act === "loupe") {
+      S.loupe = { auto: "on", on: "off", off: "auto" }[S.loupe] || "auto";
+      store.set("loupe", S.loupe);
+      paintLoupeBtn();
+      toast({ auto: "🔍 Auto: muncul pas lagi ngepas", on: "🔍 Selalu nyala", off: "🔍 Mati" }[S.loupe]);
+      return;
+    }
     send({ t: "action", a: b.dataset.act });
   });
   $("#devBtn").onclick = () => {
@@ -633,6 +767,9 @@ function bind() {
   setting("#setSpeed", "speed", Number);
   setting("#setScroll", "scroll", Number);
   setting("#setInvert", "invert", Boolean);
+  setting("#setLoupe", "loupe", String, paintLoupeBtn);
+  setting("#setZoom", "zoom", Number);
+  setting("#setPrecise", "precise", Boolean);
   // app in the background: let go of keys, close the connection (the Mac stops capturing); back: reconnect
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) { releaseHeld(); disconnect(); } else if (dev()) connect();

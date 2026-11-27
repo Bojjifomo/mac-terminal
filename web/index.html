@@ -21,6 +21,7 @@
       <div id="screen">
         <canvas id="frame"></canvas>
         <div id="cursor"></div>
+        <div id="loupe" hidden><canvas id="loupeC" width="300" height="300"></canvas><div class="cross"></div><span class="lz"></span></div>
         <div id="status">Nyambung…</div>
       </div>
       <div id="hud">
@@ -36,6 +37,7 @@
   <section id="base">
     <div id="tools">
       <button data-act="ime" title="Ketik pakai keyboard HP (dikte juga bisa)">Aa</button>
+      <button data-act="loupe" id="loupeBtn" title="Kaca pembesar: auto / nyala / mati">🔍</button>
       <button data-act="mission" title="Mission Control">▦</button>
       <button data-act="desktopLeft" title="Desktop kiri">◀︎</button>
       <button data-act="desktopRight" title="Desktop kanan">▶︎</button>
@@ -45,7 +47,7 @@
       <button data-act="mute" title="Mute">🔇</button>
     </div>
     <div id="kb"></div>
-    <div id="pad"><div id="padhint">1 jari geser · tap klik · 2 jari scroll / tap klik kanan · tahan = drag · 3 jari = desktop / Mission Control</div></div>
+    <div id="pad"><div id="padhint">1 jari geser (pelan = 🔍 muncul) · tap klik · 2 jari scroll / tap klik kanan · tahan = drag · 3 jari = desktop</div></div>
   </section>
 </div>
 <button id="unfull" hidden>⌨︎</button>
@@ -64,10 +66,15 @@
     <label>Kualitas layar <select id="setQuality"><option value="low">Hemat (cepat)</option><option value="mid">Normal</option><option value="high">Tajam</option></select></label>
     <label>Maks fps <select id="setFps"><option>10</option><option>15</option><option>24</option><option>30</option><option>60</option></select></label>
     <label>Baris F1–F12 <input type="checkbox" id="setFrow"></label>
+    <h3>Kaca pembesar (klik akurat)</h3>
+    <label>Mode <select id="setLoupe"><option value="auto">Auto: muncul pas lagi ngepas</option><option value="on">Selalu nyala</option><option value="off">Mati</option></select></label>
+    <label>Perbesar <select id="setZoom"><option value="2">2×</option><option value="3">3×</option><option value="4">4×</option><option value="6">6×</option></select></label>
+    <label>Pointer pelan pas kaca nyala <input type="checkbox" id="setPrecise"></label>
     <h3>Trackpad</h3>
     <label>Kecepatan pointer <input type="range" id="setSpeed" min="0.5" max="4" step="0.1"></label>
     <label>Kecepatan scroll <input type="range" id="setScroll" min="0.3" max="4" step="0.1"></label>
     <label>Balik arah scroll <input type="checkbox" id="setInvert"></label>
+    <p class="muted">Klik akurat: di trackpad, geser pelan / diam sebentar = kaca pembesar muncul, tanda + = titik yang diklik. Di layar: tahan jari sebentar, geser buat ngepas (kaca muncul di atas jari), lepas = klik.</p>
     <p class="muted">Tap ⌘ ⌥ ⌃ ⇧ sekali = buat tombol berikutnya. Tap dua kali / tahan = dikunci (buat ⌘+Tab: kunci ⌘, tap Tab, tap ⌘ lagi). fn + panah = Home/End/PgUp/PgDn, fn + ⌫ = Delete maju.</p>
   </div>
 </div>

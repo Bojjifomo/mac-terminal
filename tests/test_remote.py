@@ -270,6 +270,40 @@ class WebSocketTest(unittest.TestCase):
         time.sleep(0.2)
         self.assertTrue(self.inp.text_buf.endswith("masih hidup"))
 
+    def test_magnifier_sends_a_sharp_piece_around_the_pointer(self):
+        s, f, *_ = self.connect()
+        info = json.loads(self.rx(f))
+        self.assertTrue(info["zoom"])
+        self.inp.x, self.inp.y = 300.0, 200.0
+        self.tx(s, {"t": "cfg", "w": 320, "q": 0.5, "fps": 30})
+        self.tx(s, {"t": "zoom", "on": True, "side": 100, "px": 200})
+        for _ in range(10):
+            head, jpeg = self.frame(f)
+            if head["t"] == "zoom":
+                break
+            self.tx(s, {"t": "ack"})
+        self.assertEqual(head["t"], "zoom")
+        self.assertEqual(jpeg[:2], b"\xff\xd8")
+        x, y, w, h = head["r"]
+        self.assertAlmostEqual(x, (300 - 50) / 1512, places=4)      # centred on the pointer
+        self.assertAlmostEqual(y, (200 - 50) / 982, places=4)
+        from PIL import Image
+        import io
+        self.assertEqual(Image.open(io.BytesIO(jpeg)).size, (200, 200))
+
+    def test_magnifier_stays_inside_the_screen(self):
+        s, f, *_ = self.connect()
+        self.rx(f)
+        self.inp.x, self.inp.y = 2.0, 2.0                               # top-left corner
+        self.tx(s, {"t": "cfg", "w": 320, "q": 0.5, "fps": 30})
+        self.tx(s, {"t": "zoom", "on": True, "side": 100, "px": 128})
+        for _ in range(10):
+            head, _ = self.frame(f)
+            if head["t"] == "zoom":
+                break
+            self.tx(s, {"t": "ack"})
+        self.assertEqual(head["r"][:2], [0.0, 0.0])
+
 
 if __name__ == "__main__":
     unittest.main()

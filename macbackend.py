@@ -142,6 +142,9 @@ class SCKCapture:
     """ScreenCaptureKit screenshots (macOS 14+), one per frame: scaled on the GPU. The phone draws the pointer."""
     cursor_in_image = False
 
+    def grab_region(self, display_id, x, y, side, out_px, quality):
+        return grab_region(display_id, x, y, side, out_px, quality)
+
     def __init__(self):
         import ScreenCaptureKit as SCK
         self.SCK = SCK
@@ -180,6 +183,9 @@ class SCKStreamCapture:
     the GPU; the newest one is JPEG-encoded (Core Image, GPU) only when the phone is ready for it. This is how Sill
     and other remote apps capture; a screenshot per frame (SCKCapture) is several times slower."""
     cursor_in_image = False
+
+    def grab_region(self, display_id, x, y, side, out_px, quality):
+        return grab_region(display_id, x, y, side, out_px, quality)
 
     def __init__(self):
         import CoreMedia
@@ -296,6 +302,9 @@ class CGCapture:
     """CoreGraphics fallback (older macOS). No cursor in the picture: the phone draws it."""
     cursor_in_image = False
 
+    def grab_region(self, display_id, x, y, side, out_px, quality):
+        return grab_region(display_id, x, y, side, out_px, quality)
+
     def grab(self, display_id: int, width: int, quality: float) -> tuple[bytes, int, int]:
         img = Q.CGDisplayCreateImage(display_id)
         if img is None:
@@ -328,6 +337,46 @@ def make_capture():
         return cap
     except Exception as exc:                            # noqa: BLE001
         raise RuntimeError(f"no way to capture the screen: {first} · CoreGraphics: {exc}") from exc
+
+
+# ---------------------------------------------------------------- magnifier: a small piece of the screen, sharp
+_sck_content = [None]
+
+
+def _sck_display(SCK, display_id: int):
+    for attempt in range(2):
+        if _sck_content[0] is None or attempt:
+            content, err = _wait(lambda h: SCK.SCShareableContent.getShareableContentWithCompletionHandler_(h))
+            if err is not None or content is None:
+                raise PermissionError(f"Screen Recording not allowed ({err})")
+            _sck_content[0] = content
+        for d in _sck_content[0].displays():
+            if int(d.displayID()) == int(display_id):
+                return d
+    raise LookupError(f"display {display_id} not found")
+
+
+def grab_region(display_id: int, x: float, y: float, side: float, out_px: int, quality: float) -> bytes:
+    """JPEG of the square (x, y, side) in display points, at out_px pixels: the screen's own sharpness (Retina = 2 px
+    per point), not the stream picture blown up. ScreenCaptureKit (macOS 14+), else CoreGraphics."""
+    try:
+        import ScreenCaptureKit as SCK
+        d = _sck_display(SCK, display_id)
+        cfg = SCK.SCStreamConfiguration.alloc().init()
+        cfg.setSourceRect_(Q.CGRectMake(x, y, side, side))
+        cfg.setWidth_(int(out_px))
+        cfg.setHeight_(int(out_px))
+        cfg.setShowsCursor_(False)
+        filt = SCK.SCContentFilter.alloc().initWithDisplay_excludingWindows_(d, [])
+        img, err = _wait(lambda h: SCK.SCScreenshotManager.captureImageWithFilter_configuration_completionHandler_(filt, cfg, h))
+        if err is None and img is not None:
+            return _jpeg(img, quality)
+    except (ImportError, AttributeError, TimeoutError, LookupError):
+        pass
+    img = Q.CGDisplayCreateImageForRect(display_id, Q.CGRectMake(x, y, side, side))
+    if img is None:
+        raise PermissionError("Screen Recording not allowed")
+    return _jpeg(_scaled(img, int(out_px), int(out_px)), quality)
 
 
 # ---------------------------------------------------------------- permissions
