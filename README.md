@@ -2,7 +2,8 @@
 
 Kendaliin Mac mini dan MacBook Pro dari iPhone. Layar Mac di atas, keyboard MacBook + trackpad di bawah, kayak MacBook mini.
 
-- **Layar**: gambar layar Mac live (JPEG, sampai 60 fps tergantung jaringan). Tap di layar = klik di situ, geser = drag, tahan = klik kanan.
+- **Layar**: gambar layar Mac live. Tap di layar = klik di situ, geser langsung = drag. **Tahan sebentar lalu geser = ngepas pakai kaca pembesar** (muncul di atas jari, jadi jari nggak nutupin target), lepas = klik.
+- **🔍 Kaca pembesar (klik akurat)**: lingkaran pembesar di dekat pointer, tanda **+** merah = titik persis yang bakal diklik. Isinya potongan layar Mac dalam **resolusi asli** (tulisan "tajam"), bukan gambar kecil yang di-zoom. Mode di tombol 🔍 atau ⚙: **Auto** (muncul sendiri pas jari di trackpad pelan / diam: lagi ngepas, hilang pas geser cepat), **Selalu nyala**, **Mati**. Perbesar 2× / 3× / 4× / 6×. Selama kaca nyala, pointer gerak lebih pelan biar gampang ngepas (bisa dimatiin di ⚙).
 - **Keyboard**: layout MacBook lengkap (esc + F1–F12 opsional, angka, huruf, ⇧ ⌃ ⌥ ⌘ fn, panah). Tahan ⌫ / panah = berulang.
 - **Modifier**: tap ⌘ sekali = buat tombol berikutnya (⌘C, ⌘V). Tap dua kali atau tahan = dikunci dan beneran ditahan di Mac (⌘+Tab: kunci ⌘, tap Tab berkali-kali, tap ⌘ lagi). fn + panah = Home / End / PgUp / PgDn.
 - **Trackpad**: 1 jari geser (pakai akselerasi), tap = klik, tap dua kali = double click, 2 jari geser = scroll, 2 jari tap = klik kanan, tahan atau tap-lalu-geser = drag, 3 jari kiri/kanan = ganti desktop, 3 jari atas = Mission Control.
@@ -11,7 +12,7 @@ Kendaliin Mac mini dan MacBook Pro dari iPhone. Layar Mac di atas, keyboard MacB
 - **Dua Mac**: tombol nama Mac di pojok kanan atas = pindah Mac (kalau ada 2, sekali tap langsung pindah). ⚙ = daftar Mac, kualitas, fps, kecepatan trackpad, arah scroll.
 - **⤢**: layar penuh (keyboard disembunyiin), ⌨︎ buat balik.
 
-## Kenapa sekarang lebih cepat (v1.1)
+## Kenapa sekarang lebih cepat (v1.1+)
 
 Belajar dari [Sill](https://github.com/Saffsanity/sill) (app native yang ngelakuin hal sama):
 

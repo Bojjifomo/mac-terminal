@@ -100,3 +100,15 @@ class DemoCapture:
         buf = io.BytesIO()
         im.save(buf, "JPEG", quality=int(max(10, min(95, quality * 100))))
         return buf.getvalue(), w, h
+
+    def grab_region(self, display_id: int, x: float, y: float, side: float, out_px: int, quality: float) -> bytes:
+        """The magnifier's piece: drawn at Retina size (2 px per point) and cut out, like the Mac does."""
+        from PIL import Image
+        full, w, h = self.grab(display_id, W * 2, 0.95)
+        im = Image.open(io.BytesIO(full))
+        s = w / W
+        box = tuple(int(round(v * s)) for v in (x, y, x + side, y + side))
+        crop = im.crop(box).resize((int(out_px), int(out_px)), Image.LANCZOS)
+        buf = io.BytesIO()
+        crop.save(buf, "JPEG", quality=int(max(10, min(95, quality * 100))))
+        return buf.getvalue()

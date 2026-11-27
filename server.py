@@ -33,7 +33,7 @@ import ws as wslib  # noqa: E402
 
 WEB = HERE / "web"
 CONFIG = Path(os.environ.get("MAC_REMOTE_HOME", Path.home() / ".mac-remote")) / "config.json"
-VERSION = "1.1"
+VERSION = "1.2"
 STATIC = {"/": "index.html", "/index.html": "index.html", "/app.js": "app.js", "/style.css": "style.css",
           "/manifest.webmanifest": "manifest.webmanifest", "/icon.svg": "icon.svg", "/icon-180.png": "icon-180.png",
           "/icon-512.png": "icon-512.png"}
@@ -96,8 +96,13 @@ class FrameSource:
         self.capture = capture
         self.displays = displays
         self.lock = threading.Lock()
+        self.rlock = threading.Lock()                   # magnifier pieces: their own lock, never wait for a frame
         self.share_s = share_s
         self.last: dict = {}
+
+    def region(self, display_id: int, x: float, y: float, side: float, out_px: int, quality: float) -> bytes:
+        with self.rlock:
+            return self.capture.grab_region(display_id, x, y, side, out_px, quality)
 
     def frame(self, display: int, width: int, quality: float) -> dict:
         ds = self.displays()
@@ -133,6 +138,8 @@ class Session:
         self.last_etag = ""
         self.last_cursor = None
         self.ready = False                    # the phone said what size it wants (first "cfg"): send nothing before
+        self.zoom = {"on": False, "side": 120.0, "px": 360}   # magnifier: piece of screen around the pointer
+        self.zoom_in_flight = 0
 
     # ---- frames out
     def sender(self):
@@ -172,6 +179,46 @@ class Session:
         finally:
             self.running = False
 
+    # ---- magnifier out: a sharp piece around the pointer, on its own track so the main picture never waits for it
+    def zoom_sender(self):
+        region = getattr(self.H.frames.capture, "grab_region", None)
+        last = None
+        try:
+            while self.running:
+                with self.cond:
+                    while self.running and (not self.zoom["on"] or self.zoom_in_flight >= 1):
+                        self.cond.wait(0.5)
+                    z = dict(self.zoom)
+                    cfg = dict(self.cfg)
+                if not self.running:
+                    break
+                t0 = time.monotonic()
+                ds = self.H.controller.b.displays()
+                d = ds[min(max(int(cfg["d"]), 0), len(ds) - 1)]
+                cx, cy = self.H.controller.b.pos()
+                side = min(max(float(z["side"]), 16.0), min(d["w"], d["h"]))
+                # centred on the pointer, kept inside the screen
+                x = min(max(cx - d["x"] - side / 2, 0.0), d["w"] - side)
+                y = min(max(cy - d["y"] - side / 2, 0.0), d["h"] - side)
+                key = (round(x), round(y), round(side), self.last_etag)
+                if key != last or time.monotonic() - getattr(self, "_zoom_t", 0) > 0.5:
+                    data = self.H.frames.region(d["id"], x, y, side, int(z["px"]), 0.7)
+                    head = json.dumps({"t": "zoom", "r": [x / d["w"], y / d["h"], side / d["w"], side / d["h"]]}).encode()
+                    with self.cond:
+                        self.zoom_in_flight += 1
+                    self.ws.send_bytes(len(head).to_bytes(4, "big") + head + data)
+                    last, self._zoom_t = key, time.monotonic()
+                wait = 1 / 20 - (time.monotonic() - t0)          # up to 20 a second
+                if wait > 0:
+                    time.sleep(wait)
+        except wslib.Closed:
+            pass
+        except Exception as exc:                                    # noqa: BLE001 - the phone falls back to the stream
+            try:
+                self.ws.send_text(json.dumps({"t": "zoomoff", "error": str(exc)[:200]}))
+            except wslib.Closed:
+                pass
+
     # ---- messages in
     def on_message(self, msg):
         if not isinstance(msg, str):
@@ -197,6 +244,19 @@ class Session:
                 self.ready = True
                 self.last_etag = ""                            # new size or screen: send a picture right away
                 self.cond.notify()
+        elif t == "zack":
+            with self.cond:
+                self.zoom_in_flight = 0
+                self.cond.notify_all()
+        elif t == "zoom":
+            with self.cond:
+                self.zoom["on"] = bool(m.get("on"))
+                if m.get("side"):
+                    self.zoom["side"] = float(m["side"])
+                if m.get("px"):
+                    self.zoom["px"] = min(max(int(m["px"]), 64), 720)
+                self.zoom_in_flight = 0
+                self.cond.notify_all()
         elif t == "input":
             with self.H.input_lock:
                 self.H.controller.handle_all(list(m.get("ev") or [])[:500])
@@ -207,8 +267,11 @@ class Session:
     def run(self):
         try:
             self.ws.send_text(json.dumps({"t": "info", "name": self.H.name, "version": VERSION,
-                                          "displays": self.H.controller.b.displays()}))
+                                          "displays": self.H.controller.b.displays(),
+                                          "zoom": hasattr(self.H.frames.capture, "grab_region")}))
             threading.Thread(target=self.sender, daemon=True).start()
+            if hasattr(self.H.frames.capture, "grab_region"):
+                threading.Thread(target=self.zoom_sender, daemon=True).start()
             while self.running:
                 msg = self.ws.recv()
                 try:
