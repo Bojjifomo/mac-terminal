@@ -38,8 +38,27 @@ ACTIONS = {
     "spotlight": ("space", ["command"]),
     "lock": ("q", ["control", "command"]),
     "screenshot": ("4", ["shift", "command"]),
+    "showDesktop": ("f11", []),
+    "appNext": ("tab", ["command"]),
+    "appPrev": ("tab", ["command", "shift"]),
+    # Touch Bar style row, by the app in front
+    "back": ("[", ["command"]),
+    "forward": ("]", ["command"]),
+    "reload": ("r", ["command"]),
+    "newTab": ("t", ["command"]),
+    "closeTab": ("w", ["command"]),
+    "zoomIn": ("=", ["command"]),
+    "zoomOut": ("-", ["command"]),
+    "zoomReset": ("0", ["command"]),
+    "nextSlide": ("right", []),
+    "prevSlide": ("left", []),
+    "newFolder": ("n", ["command", "shift"]),
+    "paste": ("v", ["command"]),
+    "copy": ("c", ["command"]),
+    "undo": ("z", ["command"]),
+    "quitApp": ("q", ["command"]),
 }
-BACKEND_ACTIONS = {"volup", "voldown", "mute"}
+BACKEND_ACTIONS = {"volup", "voldown", "mute", "playpause", "nexttrack", "prevtrack"}
 MOD_KEYCODE = {"shift": KEYCODES["shift"], "control": KEYCODES["control"], "option": KEYCODES["option"],
                "command": KEYCODES["command"], "fn": KEYCODES["fn"]}
 

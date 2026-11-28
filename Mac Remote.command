@@ -25,4 +25,5 @@ if ! .venv/bin/python server.py --doctor; then
   open "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
   read -r -p "Enter buat tutup." _; exit 1
 fi
-exec caffeinate -i .venv/bin/python server.py
+# -i: no idle sleep, -s: no system sleep on power: the Mac stays reachable from outside while this runs
+exec caffeinate -is .venv/bin/python server.py

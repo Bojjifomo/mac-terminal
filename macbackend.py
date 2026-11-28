@@ -97,12 +97,46 @@ class MacInput:
                 _post(ev)
 
     def action(self, name):
+        if name in _MEDIA_KEYS:
+            return _media_key(_MEDIA_KEYS[name])
         script = {
             "volup": "set volume output volume ((output volume of (get volume settings)) + 6)",
             "voldown": "set volume output volume ((output volume of (get volume settings)) - 6)",
             "mute": "set volume output muted (not (output muted of (get volume settings)))",
         }[name]
         subprocess.Popen(["osascript", "-e", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    # ---- clipboard (text) and the app in front
+    def clipboard(self):
+        """(change count, text): the count goes up on every copy, so the server sends only new copies."""
+        from AppKit import NSPasteboard, NSPasteboardTypeString
+        pb = NSPasteboard.generalPasteboard()
+        return int(pb.changeCount()), (pb.stringForType_(NSPasteboardTypeString) or "")
+
+    def set_clipboard(self, text):
+        from AppKit import NSPasteboard, NSPasteboardTypeString
+        pb = NSPasteboard.generalPasteboard()
+        pb.clearContents()
+        pb.setString_forType_(str(text), NSPasteboardTypeString)
+        return int(pb.changeCount())
+
+    def front_app(self):
+        from AppKit import NSWorkspace
+        app = NSWorkspace.sharedWorkspace().frontmostApplication()
+        return {"id": str(app.bundleIdentifier() or ""), "name": str(app.localizedName() or "")} if app else {"id": "", "name": ""}
+
+
+# Play / next / previous as the media keys of a Mac keyboard: whatever app is playing answers (Music, Spotify, YouTube…)
+_MEDIA_KEYS = {"playpause": 16, "nexttrack": 17, "prevtrack": 18}     # NX_KEYTYPE_PLAY / NEXT / PREVIOUS
+
+
+def _media_key(key: int) -> None:
+    from AppKit import NSEvent
+    for down in (True, False):
+        flags = 0xA00 if down else 0xB00
+        ev = NSEvent.otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2_(
+            14, (0, 0), flags, 0, 0, None, 8, (key << 16) | flags, -1)
+        _post(ev.CGEvent())
 
 
 # ---------------------------------------------------------------- capture

@@ -10,7 +10,9 @@ const store = {
 const S = {
   devices: store.get("devices", []),
   cur: store.get("cur", 0),
-  quality: store.get("quality", "mid"),
+  quality: store.get("quality", "auto"),         // auto = follows the signal (away from home)
+  sound: store.get("sound", true),
+  lockLeave: store.get("lockLeave", false),
   fps: store.get("fps", 24),
   frow: store.get("frow", false),
   speed: store.get("speed", 1.6),
@@ -23,7 +25,7 @@ const S = {
   info: null,
 };
 // picture width in pixels (capped by the screen's own size) and JPEG quality
-const QUALITY = { low: { w: 960, q: 0.45 }, mid: { w: 1280, q: 0.55 }, high: { w: 1920, q: 0.65 } };
+const QUALITY = { auto: { w: 1600, q: 0.6 }, low: { w: 960, q: 0.45 }, mid: { w: 1280, q: 0.55 }, high: { w: 1920, q: 0.65 } };
 const dev = () => S.devices[S.cur] || null;
 const api = (path, extra = "") => `${dev().url}${path}?token=${encodeURIComponent(dev().token)}${extra}`;
 
@@ -105,8 +107,14 @@ function frameSpec() {
 }
 function sendCfg() {
   const ws = live.ws;
-  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: "cfg", ...frameSpec(), fps: S.fps, d: S.display }));
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: "cfg", ...frameSpec(), quality: S.quality, fps: S.fps, d: S.display,
+    lockOnLeave: S.lockLeave }));
 }
+// round trip to the Mac every 2 s: shown under the screen, so a bad signal is visible, not a mystery
+setInterval(() => {
+  const ws = live.ws;
+  if (ws && ws.readyState === 1 && !document.hidden) ws.send(JSON.stringify({ t: "ping", ts: performance.now() }));
+}, 2000);
 function wsUrl() {
   const u = new URL(dev().url);
   return `${u.protocol === "https:" ? "wss:" : "ws:"}//${u.host}/api/ws?token=${encodeURIComponent(dev().token)}`;
@@ -145,6 +153,9 @@ function connect() {
   };
 }
 function onText(m) {
+  if (m.t === "pong") { live.rtt = Math.round(performance.now() - m.ts); return; }
+  if (m.t === "clip") return onMacClip(m.s);
+  if (m.t === "app") return renderTouchBar(m);
   if (m.t === "info") { applyInfo({ ok: true, ...m }); loupe.serverZoom = !!m.zoom; loupe.sentOn = false; }
   else if (m.t === "zoomoff") loupe.serverZoom = false;
   else if (m.t === "cursor") setCursor(m.c);
@@ -170,6 +181,7 @@ async function onFrame(buf, ws) {
   } catch {}
   if (ws.readyState === 1) ws.send('{"t":"ack"}');   // ready for the next one
   if (head.sw) { live.sw = head.sw; live.sh = head.sh; }
+  live.net = { kb: head.kb, w: head.w, lag: head.lag, auto: head.auto };
   setCursor(head.c);
   countFrame();
   setStatus("");
@@ -180,11 +192,23 @@ setInterval(() => {
   const fps = Math.round(live.frames * 1000 / (now - live.t0));
   live.frames = 0;
   live.t0 = now;
-  $("#fps").textContent = !dev() ? "" : fps ? `${fps} fps` : (live.ws && live.ws.readyState === 1 ? "● live" : "");
+  const on = live.ws && live.ws.readyState === 1;
+  const rtt = on && live.rtt != null ? ` · ${live.rtt} ms` : "";
+  $("#fps").textContent = !dev() ? "" : (fps ? `${fps} fps` : on ? "● live" : "") + rtt;
+  const n = live.net;
+  if (n) $("#netInfo").textContent = `Koneksi: ${live.rtt ?? "–"} ms bolak-balik · gambar ${n.w}px, ${n.kb} KB · tampil di HP ${n.lag} ms`
+    + (n.auto ? " · kualitas auto" : "") + (live.mode === "poll" ? " · mode lama (tanpa WebSocket)" : "");
 }, 1000);
 
 // the pointer is drawn here, so it moves the moment the finger does; the Mac's position corrects it
 function placeCursor() {
+  if (view.s > 1.001) {                                       // zoomed in: follow the pointer when it nears an edge
+    const el = $("#screen"), w = el.clientWidth, h = el.clientHeight, m = 28;
+    const px = live.cursor.x * w * view.s + view.x, py = live.cursor.y * h * view.s + view.y;
+    if (px < m) view.x += m - px; else if (px > w - m) view.x -= px - (w - m);
+    if (py < m) view.y += m - py; else if (py > h - m) view.y -= py - (h - m);
+    applyView();
+  }
   const c = $("#cursor");
   c.style.left = live.cursor.x * 100 + "%";
   c.style.top = live.cursor.y * 100 + "%";
@@ -194,6 +218,7 @@ function setCursor(c) {
   live.cursor = { x: c[0], y: c[1] };
   placeCursor();
 paintLoupeBtn();
+renderTouchBar();
 requestAnimationFrame(loupeTick);
 }
 function predict(ev) {
@@ -383,6 +408,7 @@ function kbDown(e) {
   e.preventDefault();
   const key = el.dataset.key;
   el.classList.add("down");
+  click(key === "space" ? "space" : "key");
   const p = { el, key, repeated: false };
   if (MODS.includes(key)) {
     p.longTimer = setTimeout(() => { p.long = true; setMod(key, "lock"); }, 450);
@@ -438,6 +464,13 @@ function padDown(e) {
   }
   pad.pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
   pad.max = Math.max(pad.max, pad.pts.size);
+  stopGlide();
+  if (pad.pts.size === 2) {
+    const [a, b] = [...pad.pts.values()];
+    pad.pinchD0 = Math.hypot(a.x - b.x, a.y - b.y);
+    pad.mode2 = null;
+    pad.sv = { x: 0, y: 0 };
+  }
   pad.c = centroid();
   pad.last = now;
 }
@@ -463,8 +496,21 @@ function padMove(e) {
     if (S.precise && loupeShown()) gain = S.speed * 0.45 * (1 + Math.min(v * 0.6, 1.5));   // fine steps while it shows
     send({ t: "move", dx: dx * gain, dy: dy * gain });
   } else if (n === 2) {
-    const k = S.scroll * 2 * (S.invert ? -1 : 1);
-    send({ t: "scroll", dx: dx * k, dy: dy * k });
+    const [a, b] = [...pad.pts.values()];
+    const d = Math.hypot(a.x - b.x, a.y - b.y);
+    if (!pad.mode2) {                                       // which is it: fingers apart / together, or both moving?
+      if (Math.abs(d - pad.pinchD0) > 22) { pad.mode2 = "pinch"; pad.pinchRef = d; }
+      else if (pad.moved > 10) pad.mode2 = "scroll";
+    }
+    if (pad.mode2 === "pinch") {                            // ⌘+ / ⌘−: zooms Safari, Chrome, Preview, Maps…
+      if (d / pad.pinchRef > 1.28) { send({ t: "action", a: "zoomIn" }); pad.pinchRef = d; }
+      else if (d / pad.pinchRef < 0.78) { send({ t: "action", a: "zoomOut" }); pad.pinchRef = d; }
+    } else if (pad.mode2 === "scroll") {
+      const k = S.scroll * 2 * (S.invert ? -1 : 1);
+      send({ t: "scroll", dx: dx * k, dy: dy * k });
+      const f = 16 / dt;                                    // per 60 Hz frame, for the glide after lift-off
+      pad.sv = { x: pad.sv.x * 0.6 + dx * k * f * 0.4, y: pad.sv.y * 0.6 + dy * k * f * 0.4 };
+    }
   } else {
     pad.three.dx += dx; pad.three.dy += dy;
   }
@@ -481,16 +527,37 @@ function padUp(e) {
     $("#pad").classList.remove("drag");
     send({ t: "up", b: "left", mods: activeMods() });
     afterKey();
+  } else if (pad.max >= 4) {                                // four fingers: switch apps (like ⌘Tab), up = desktop
+    const { dx, dy } = pad.three;
+    if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy)) send({ t: "action", a: dx < 0 ? "appNext" : "appPrev" });
+    else if (dy < -50) send({ t: "action", a: "showDesktop" });
+    else if (dy > 50) send({ t: "action", a: "apps" });
   } else if (pad.max >= 3) {
     const { dx, dy } = pad.three;
     if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy)) send({ t: "action", a: dx < 0 ? "desktopRight" : "desktopLeft" });
     else if (dy < -50) send({ t: "action", a: "mission" });
     else if (dy > 50) send({ t: "action", a: "apps" });
-  } else if (tap) {
+  } else if (pad.max === 2 && pad.mode2 === "scroll" && now - pad.last < 80) {
+    glide(pad.sv.x, pad.sv.y);                              // momentum: the page keeps going, slowing down
+  } else if (tap && !(pad.max === 2 && pad.mode2)) {
     send({ t: "click", b: pad.max === 2 ? "right" : "left", mods: activeMods() });
     afterKey();
     if (pad.max === 1) pad.lastTapEnd = now;
   }
+}
+
+let glideRaf = 0;
+function stopGlide() { cancelAnimationFrame(glideRaf); glideRaf = 0; }
+function glide(vx, vy) {
+  stopGlide();
+  if (Math.hypot(vx, vy) < 2) return;
+  const step = () => {
+    vx *= 0.94; vy *= 0.94;
+    if (Math.hypot(vx, vy) < 0.6) { glideRaf = 0; return; }
+    send({ t: "scroll", dx: vx, dy: vy });
+    glideRaf = requestAnimationFrame(step);
+  };
+  glideRaf = requestAnimationFrame(step);
 }
 
 // ---------------------------------------------------------------- the screen itself: tap = click there
@@ -500,8 +567,46 @@ function screenPoint(e) {
   return { x: Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), y: Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)) };
 }
 // tap = click there · move right away = drag · hold, then slide = aim with the magnifier above your finger, lift = click
+// two fingers on the picture: zoom in / move around it on the phone (the Mac is not touched), 1× under the screen resets
+const view = { s: 1, x: 0, y: 0 };
+const scrPts = new Map();
+let viewG = null;
+function applyView() {
+  const el = $("#screen"), w = el.clientWidth, h = el.clientHeight;
+  view.s = Math.min(6, Math.max(1, view.s));
+  view.x = Math.min(0, Math.max(w - w * view.s, view.x));
+  view.y = Math.min(0, Math.max(h - h * view.s, view.y));
+  $("#view").style.transform = view.s > 1.001 ? `translate(${view.x}px, ${view.y}px) scale(${view.s})` : "";
+  $("#cursor").style.transform = `translate(-1px, -1px) scale(${1 / view.s})`;   // the pointer keeps its size
+  $("#viewReset").hidden = view.s <= 1.001;
+  $("#viewReset").textContent = `${view.s.toFixed(1)}× ⟲`;
+}
+function scrLocal(p) { const r = $("#screen").getBoundingClientRect(); return { x: p.x - r.left, y: p.y - r.top }; }
+function startViewGesture() {
+  const [a, b] = [...scrPts.values()];
+  viewG = { s: view.s, x: view.x, y: view.y, d: Math.hypot(a.x - b.x, a.y - b.y) || 1, c: scrLocal({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }) };
+}
+function moveViewGesture() {
+  const [a, b] = [...scrPts.values()];
+  const d = Math.hypot(a.x - b.x, a.y - b.y), c = scrLocal({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+  const s = Math.min(6, Math.max(1, viewG.s * d / viewG.d));
+  const px = (viewG.c.x - viewG.x) / viewG.s, py = (viewG.c.y - viewG.y) / viewG.s;   // the picture point under the fingers
+  Object.assign(view, { s, x: c.x - px * s, y: c.y - py * s });
+  applyView();
+}
 function scrDown(e) {
-  if (scr.id !== null) return;
+  scrPts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (scrPts.size === 2) {                                   // a second finger: this is a zoom, not a click
+    e.preventDefault();
+    capture($("#screen"), e.pointerId);
+    clearTimeout(scr.timer);
+    if (scr.dragging) send({ t: "up", b: "left" });
+    scr.dragging = false; scr.aim = false; loupe.finger = null; scr.cancel = true;
+    startViewGesture();
+    return;
+  }
+  if (scr.id !== null || scrPts.size > 2) return;
+  scr.cancel = false;
   e.preventDefault();
   capture($("#screen"), e.pointerId);
   Object.assign(scr, { id: e.pointerId, x: e.clientX, y: e.clientY, t: performance.now(), dragging: false, aim: false });
@@ -514,7 +619,9 @@ function scrDown(e) {
   }, 300);
 }
 function scrMove(e) {
-  if (e.pointerId !== scr.id) return;
+  if (scrPts.has(e.pointerId)) scrPts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (viewG) { if (scrPts.size >= 2) { e.preventDefault(); moveViewGesture(); } return; }
+  if (e.pointerId !== scr.id || scr.cancel) return;
   e.preventDefault();
   const p = screenPoint(e);
   if (scr.aim) {
@@ -530,7 +637,10 @@ function scrMove(e) {
   if (scr.dragging) send({ t: "moveTo", x: p.x, y: p.y, d: S.display });
 }
 function scrUp(e) {
+  scrPts.delete(e.pointerId);
+  if (viewG) { if (scrPts.size < 2) viewG = null; if (!scrPts.size) scr.id = null; return; }
   if (e.pointerId !== scr.id) return;
+  if (scr.cancel) { scr.id = null; return; }
   scr.id = null;
   clearTimeout(scr.timer);
   const wasAim = scr.aim;
@@ -659,6 +769,148 @@ function imeSetup() {
   ime.addEventListener("blur", () => document.querySelector('[data-act="ime"]').classList.remove("on"));
 }
 
+// ---------------------------------------------------------------- Touch Bar row: follows the app in front on the Mac
+const B = (label, act, title) => ({ label, act, title });
+const TOUCHBAR = [
+  { match: /safari|chrome|firefox|brave|arc|edge|opera|vivaldi|orion/i, keys: [B("◀︎", "back", "Kembali"), B("▶︎", "forward", "Maju"),
+    B("⟳", "reload", "Muat ulang"), B("＋", "newTab", "Tab baru"), B("✕", "closeTab", "Tutup tab"), B("A−", "zoomOut", "Perkecil"), B("A+", "zoomIn", "Perbesar")] },
+  { match: /music|spotify|itunes|podcasts|tv$|vlc|iina|quicktime/i, keys: [B("⏮", "prevtrack", "Sebelumnya"), B("⏯", "playpause", "Putar / jeda"),
+    B("⏭", "nexttrack", "Berikutnya"), B("🔉", "voldown", "Volume turun"), B("🔊", "volup", "Volume naik"), B("🔇", "mute", "Mute")] },
+  { match: /keynote|powerpoint|slides/i, keys: [B("◀ slide", "prevSlide", "Slide sebelumnya"), B("slide ▶", "nextSlide", "Slide berikutnya"),
+    B("⏯", "playpause", "Putar / jeda"), B("🔉", "voldown"), B("🔊", "volup")] },
+  { match: /finder/i, keys: [B("◀︎", "back", "Kembali"), B("▶︎", "forward", "Maju"), B("📁＋", "newFolder", "Folder baru"),
+    B("⌕", "spotlight", "Spotlight"), B("▦", "mission", "Mission Control")] },
+  { match: /./, keys: [B("▦", "mission", "Mission Control"), B("◀︎", "desktopLeft", "Desktop kiri"), B("▶︎", "desktopRight", "Desktop kanan"),
+    B("⌕", "spotlight", "Spotlight"), B("⏯", "playpause", "Putar / jeda"), B("🔉", "voldown"), B("🔊", "volup"), B("🔒", "lock", "Kunci Mac")] },
+];
+let frontApp = { id: "", name: "" };
+function renderTouchBar(app) {
+  if (app) frontApp = app;
+  const key = `${frontApp.id} ${frontApp.name}`;
+  const set = TOUCHBAR.find(t => t.match.test(key)) || TOUCHBAR[TOUCHBAR.length - 1];
+  $("#ctx").innerHTML = (frontApp.name ? `<span class="app">${escapeHtml(frontApp.name)}</span>` : "")
+    + set.keys.map(k => `<button data-act="${k.act}" title="${escapeHtml(k.title || k.label)}">${k.label}</button>`).join("");
+}
+
+// ---------------------------------------------------------------- clipboard ⇄
+// Mac → phone: a copy on the Mac shows a bar here; "Salin ke HP" puts it on the phone's clipboard.
+// Phone → Mac: 📋 opens a box to paste into (a plain http:// page may not read the phone's clipboard by itself).
+let macClip = "";
+function onMacClip(text) {
+  macClip = text;
+  $("#clipbar .t").textContent = "📋 Mac: " + text.replace(/\s+/g, " ").slice(0, 120);
+  $("#clipbar").hidden = false;
+  $("#clipLast").textContent = "Terakhir di-copy di Mac: " + text.slice(0, 300);
+  clearTimeout(onMacClip.t);
+  onMacClip.t = setTimeout(() => ($("#clipbar").hidden = true), 12000);
+}
+async function copyToPhone(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch {}
+  const ta = document.createElement("textarea");                 // works without HTTPS, inside a tap
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.cssText = "position:fixed;left:-9999px;top:0;font-size:16px";
+  document.body.append(ta);
+  ta.select();
+  ta.setSelectionRange(0, text.length);
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch {}
+  ta.remove();
+  return ok;
+}
+async function openClipSheet() {
+  $("#clipSheet").hidden = false;
+  const box = $("#clipIn");
+  box.value = "";
+  try { const t = await navigator.clipboard.readText(); if (t) box.value = t; } catch {}   // only on HTTPS
+  box.focus();
+}
+function sendClip(paste) {
+  const text = $("#clipIn").value;
+  if (!text) { toast("Kosong: tempel teksnya dulu"); return; }
+  const ws = live.ws;
+  if (!ws || ws.readyState !== 1) { toast("Belum nyambung ke Mac"); return; }
+  ws.send(JSON.stringify({ t: "clipset", s: text, paste }));
+  $("#clipSheet").hidden = true;
+  toast(paste ? "📋 Ditempel di Mac" : "📋 Masuk clipboard Mac (⌘V di Mac)");
+}
+
+// ---------------------------------------------------------------- files → the Mac's Downloads
+function uploadFiles(files) {
+  const list = [...files];
+  let i = 0;
+  const next = () => {
+    if (i >= list.length) return;
+    const f = list[i++];
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", api("/api/upload", `&name=${encodeURIComponent(f.name)}`));
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.upload.onprogress = e => { if (e.lengthComputable) toast(`📎 ${f.name}: ${Math.round(e.loaded * 100 / e.total)}%`, 4000); };
+    xhr.onload = () => {
+      let j = {};
+      try { j = JSON.parse(xhr.responseText); } catch {}
+      toast(j.ok ? `✓ ${j.name} → Downloads Mac` : `✗ ${f.name}: ${j.error || xhr.status}`, 3500);
+      next();
+    };
+    xhr.onerror = () => { toast(`✗ ${f.name}: koneksi putus`, 3500); next(); };
+    xhr.send(f);
+  };
+  next();
+}
+
+// ---------------------------------------------------------------- key click sound (the phone can't vibrate from a web page)
+let audio = null;
+function click(kind) {
+  if (!S.sound) return;
+  try {
+    audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+    if (audio.state === "suspended") audio.resume();
+    const t = audio.currentTime, len = kind === "space" ? 0.03 : 0.018;
+    const buf = audio.createBuffer(1, Math.ceil(audio.sampleRate * len), audio.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 3);
+    const src = audio.createBufferSource(), f = audio.createBiquadFilter(), g = audio.createGain();
+    f.type = "bandpass"; f.frequency.value = kind === "space" ? 1400 : 2600; f.Q.value = 0.9;
+    g.gain.setValueAtTime(0.35, t);
+    src.buffer = buf;
+    src.connect(f).connect(g).connect(audio.destination);
+    src.start(t);
+  } catch {}
+  try { navigator.vibrate && navigator.vibrate(6); } catch {}        // Android: a short tick
+}
+
+// ---------------------------------------------------------------- a Bluetooth / Magic Keyboard paired to the phone
+// Keys typed on it go to the Mac (by physical key, so ⌘ ⌥ ⌃ shortcuts work as on the Mac).
+const CODE_KEYS = { Space: "space", Enter: "return", NumpadEnter: "return", Backspace: "delete", Tab: "tab", Escape: "escape",
+  ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down", Delete: "forwarddelete", Home: "home", End: "end",
+  PageUp: "pageup", PageDown: "pagedown", Minus: "-", Equal: "=", BracketLeft: "[", BracketRight: "]", Backslash: "\\",
+  Semicolon: ";", Quote: "'", Comma: ",", Period: ".", Slash: "/", Backquote: "`" };
+function codeToKey(code) {
+  if (CODE_KEYS[code]) return CODE_KEYS[code];
+  let m = /^Key([A-Z])$/.exec(code);
+  if (m) return m[1].toLowerCase();
+  m = /^(?:Digit|Numpad)(\d)$/.exec(code);
+  if (m) return m[1];
+  m = /^F(\d{1,2})$/.exec(code);
+  if (m && +m[1] <= 20) return "f" + m[1];
+  return null;
+}
+function hardwareKeys() {
+  document.addEventListener("keydown", e => {
+    const t = e.target;
+    if (!dev() || t.closest && (t.closest("input, textarea, select") || t.closest("#sheet, #clipSheet"))) return;
+    const k = codeToKey(e.code);
+    if (!k) return;                                               // a lone modifier, media key, …
+    e.preventDefault();
+    const mods = [];
+    if (e.metaKey) mods.push("command");
+    if (e.ctrlKey) mods.push("control");
+    if (e.altKey) mods.push("option");
+    if (e.shiftKey) mods.push("shift");
+    send({ t: "key", k, mods });
+  });
+}
+
 // ---------------------------------------------------------------- settings sheet
 function renderSheet() {
   const list = $("#devList");
@@ -676,6 +928,8 @@ function renderSheet() {
   $("#setSpeed").value = S.speed;
   $("#setScroll").value = S.scroll;
   $("#setInvert").checked = S.invert;
+  $("#setSound").checked = S.sound;
+  $("#setLockLeave").checked = S.lockLeave;
   $("#setLoupe").value = S.loupe;
   $("#setZoom").value = String(S.zoom);
   $("#setPrecise").checked = S.precise;
@@ -707,6 +961,8 @@ function bind() {
     const b = e.target.closest("[data-act]");
     if (!b) return;
     if (b.dataset.act === "ime") { b.classList.add("on"); $("#ime").focus(); return; }
+    if (b.dataset.act === "clip") { macClip && !$("#clipbar").hidden ? $("#clipbar").hidden = false : openClipSheet(); return; }
+    if (b.dataset.act === "file") { $("#fileIn").click(); return; }
     if (b.dataset.act === "loupe") {
       S.loupe = { auto: "on", on: "off", off: "auto" }[S.loupe] || "auto";
       store.set("loupe", S.loupe);
@@ -773,6 +1029,21 @@ function bind() {
   setting("#setSpeed", "speed", Number);
   setting("#setScroll", "scroll", Number);
   setting("#setInvert", "invert", Boolean);
+  setting("#setSound", "sound", Boolean);
+  setting("#setLockLeave", "lockLeave", Boolean, sendCfg);
+  $("#viewReset").onclick = () => { Object.assign(view, { s: 1, x: 0, y: 0 }); applyView(); };
+  $("#fileIn").addEventListener("change", e => { if (e.target.files.length) uploadFiles(e.target.files); e.target.value = ""; });
+  $("#clipCopy").onclick = async () => {
+    const ok = await copyToPhone(macClip);
+    toast(ok ? "📋 Tersalin di HP" : "Nggak bisa salin otomatis: tahan teks di ⚙ → Clipboard");
+    $("#clipbar").hidden = true;
+  };
+  $("#clipClose").onclick = () => ($("#clipbar").hidden = true);
+  $("#clipSheetClose").onclick = () => ($("#clipSheet").hidden = true);
+  $("#clipSend").onclick = () => sendClip(false);
+  $("#clipPaste").onclick = () => sendClip(true);
+  hardwareKeys();
+  window.addEventListener("resize", () => { Object.assign(view, { s: 1, x: 0, y: 0 }); applyView(); });
   setting("#setLoupe", "loupe", String, paintLoupeBtn);
   setting("#setZoom", "zoom", Number);
   setting("#setPrecise", "precise", Boolean);
@@ -783,7 +1054,7 @@ function bind() {
   let rz = null;
   window.addEventListener("resize", () => { clearTimeout(rz); rz = setTimeout(sendCfg, 300); });
   // stop iOS from scrolling / zooming the page itself
-  document.addEventListener("touchmove", e => { if (!e.target.closest("#sheet")) e.preventDefault(); }, { passive: false });
+  document.addEventListener("touchmove", e => { if (!e.target.closest("#sheet, #clipSheet")) e.preventDefault(); }, { passive: false });
   document.addEventListener("gesturestart", e => e.preventDefault());
 }
 

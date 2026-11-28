@@ -33,7 +33,9 @@ import ws as wslib  # noqa: E402
 
 WEB = HERE / "web"
 CONFIG = Path(os.environ.get("MAC_REMOTE_HOME", Path.home() / ".mac-remote")) / "config.json"
-VERSION = "1.2"
+# where files from the phone go: the Mac's Downloads (the demo keeps them next to its config)
+DOWNLOADS = lambda: Path(os.environ["MAC_REMOTE_DOWNLOADS"]) if os.environ.get("MAC_REMOTE_DOWNLOADS") else Path.home() / "Downloads"
+VERSION = "1.3"
 STATIC = {"/": "index.html", "/index.html": "index.html", "/app.js": "app.js", "/style.css": "style.css",
           "/manifest.webmanifest": "manifest.webmanifest", "/icon.svg": "icon.svg", "/icon-180.png": "icon-180.png",
           "/icon-512.png": "icon-512.png"}
@@ -140,6 +142,14 @@ class Session:
         self.ready = False                    # the phone said what size it wants (first "cfg"): send nothing before
         self.zoom = {"on": False, "side": 120.0, "px": 360}   # magnifier: piece of screen around the pointer
         self.zoom_in_flight = 0
+        # adaptive quality ("auto", for a slow link away from home): how long the phone takes to show a picture
+        # (sent -> ack, same clock) decides how big the next ones are
+        self.auto = True
+        self.scale = 1.0
+        self.sent_at: list[float] = []
+        self.lag_ms = 0.0
+        self.good_since = time.monotonic()
+        self.lock_on_leave = False
 
     # ---- frames out
     def sender(self):
@@ -152,15 +162,21 @@ class Session:
                 if not self.running:
                     break
                 t0 = time.monotonic()
-                f = self.H.frames.frame(int(cfg["d"]), int(cfg["w"]), float(cfg["q"]))
+                w, q = int(cfg["w"]), float(cfg["q"])
+                if self.auto:
+                    w = max(480, int(w * self.scale))
+                    q = max(0.35, min(q, 0.35 + 0.3 * self.scale))
+                f = self.H.frames.frame(int(cfg["d"]), w, q)
                 d = f["display"]
                 cx, cy = self.H.controller.b.pos()
                 cur = [round((cx - d["x"]) / d["w"], 5), round((cy - d["y"]) / d["h"], 5)]
                 if f["etag"] != self.last_etag:
                     head = json.dumps({"t": "frame", "w": f["w"], "h": f["h"], "sw": d["w"], "sh": d["h"], "c": cur,
-                                       "id": f["etag"]}).encode()
+                                       "id": f["etag"], "kb": round(len(f["data"]) / 1024), "lag": round(self.lag_ms),
+                                       "auto": self.auto}).encode()
                     with self.cond:
                         self.in_flight += 1
+                        self.sent_at.append(time.monotonic())
                     self.ws.send_bytes(len(head).to_bytes(4, "big") + head + f["data"])
                     self.last_etag, self.last_cursor = f["etag"], cur
                 elif cur != self.last_cursor:                  # screen still, pointer moved (mouse at the Mac)
@@ -219,6 +235,56 @@ class Session:
             except wslib.Closed:
                 pass
 
+    def _adapt(self, lag_ms: float) -> None:
+        """Smaller pictures when the phone is slow to show them (bad signal), bigger again when it keeps up."""
+        self.lag_ms = lag_ms if not self.lag_ms else self.lag_ms * 0.7 + lag_ms * 0.3
+        now = time.monotonic()
+        if self.lag_ms > 450:
+            self.scale = max(0.4, self.scale * 0.8)
+            self.good_since = now
+        elif self.lag_ms > 250:
+            self.good_since = now
+        elif now - self.good_since > 2.5 and self.scale < 1.0:
+            self.scale = min(1.0, self.scale * 1.15)
+            self.good_since = now
+
+    # ---- the Mac's clipboard and the app in front, sent when they change (Touch Bar row, copy to the phone)
+    def watcher(self):
+        b = self.H.controller.b
+        clip = getattr(b, "clipboard", None)
+        front = getattr(b, "front_app", None)
+        last_count = None
+        last_app = None
+        self.own_clip = None
+        try:
+            while self.running:
+                if clip:
+                    try:
+                        count, text = clip()
+                        if last_count is None:
+                            last_count = count                     # what was there before: not news
+                        elif count != last_count:
+                            last_count = count
+                            if count != self.own_clip and text:    # not the text the phone itself just put there
+                                self.ws.send_text(json.dumps({"t": "clip", "s": text[:262144]}))
+                    except wslib.Closed:
+                        raise
+                    except Exception:                               # noqa: BLE001
+                        clip = None
+                if front:
+                    try:
+                        app = front()
+                        if app != last_app:
+                            last_app = app
+                            self.ws.send_text(json.dumps({"t": "app", **app}))
+                    except wslib.Closed:
+                        raise
+                    except Exception:                               # noqa: BLE001
+                        front = None
+                time.sleep(0.6)
+        except wslib.Closed:
+            pass
+
     # ---- messages in
     def on_message(self, msg):
         if not isinstance(msg, str):
@@ -228,12 +294,22 @@ class Session:
         if t == "ack":
             with self.cond:
                 self.in_flight = max(0, self.in_flight - 1)
+                sent = self.sent_at.pop(0) if self.sent_at else None
                 self.cond.notify()
+            if sent is not None:
+                self._adapt((time.monotonic() - sent) * 1000)
         elif t == "cfg":
             with self.cond:
-                preset = PRESETS.get(m.get("quality"))
+                quality = m.get("quality")
+                preset = PRESETS.get(quality)
                 if preset:
                     self.cfg["w"], self.cfg["q"] = preset
+                if quality:
+                    self.auto = quality == "auto"
+                    if self.auto:
+                        self.cfg["q"] = 0.6
+                if "lockOnLeave" in m:
+                    self.lock_on_leave = bool(m["lockOnLeave"])
                 if m.get("w"):
                     self.cfg["w"] = min(max(int(m["w"]), 160), 3200)
                 if m.get("fps"):
@@ -241,6 +317,7 @@ class Session:
                 if "d" in m:
                     self.cfg["d"] = int(m["d"])
                 self.in_flight = 0
+                self.sent_at = []
                 self.ready = True
                 self.last_etag = ""                            # new size or screen: send a picture right away
                 self.cond.notify()
@@ -263,6 +340,15 @@ class Session:
                 self.H.last_input[0] = time.monotonic()
         elif t == "ping":
             self.ws.send_text(json.dumps({"t": "pong", "ts": m.get("ts")}))
+        elif t == "clipset":
+            # text from the phone onto the Mac's clipboard; paste=True also presses ⌘V where the Mac's cursor is
+            setter = getattr(self.H.controller.b, "set_clipboard", None)
+            if setter is None:
+                raise ValueError("clipboard not available")
+            self.own_clip = setter(str(m.get("s", ""))[:262144])
+            if m.get("paste"):
+                with self.H.input_lock:
+                    self.H.controller.handle({"t": "action", "a": "paste"})
 
     def run(self):
         try:
@@ -270,6 +356,7 @@ class Session:
                                           "displays": self.H.controller.b.displays(),
                                           "zoom": hasattr(self.H.frames.capture, "grab_region")}))
             threading.Thread(target=self.sender, daemon=True).start()
+            threading.Thread(target=self.watcher, daemon=True).start()
             if hasattr(self.H.frames.capture, "grab_region"):
                 threading.Thread(target=self.zoom_sender, daemon=True).start()
             while self.running:
@@ -286,7 +373,7 @@ class Session:
                 self.cond.notify_all()
             with self.H.input_lock:
                 self.H.controller.release_all()            # phone gone mid-drag / with ⌘ held
-            self.H.session_ended()
+            self.H.session_ended(lock=self.lock_on_leave)
 
 
 # ---------------------------------------------------------------- http
@@ -372,10 +459,17 @@ class Handler(BaseHTTPRequestHandler):
     sessions_lock = threading.Lock()
 
     @classmethod
-    def session_ended(cls):
+    def session_ended(cls, lock: bool = False):
         with cls.sessions_lock:
             cls.sessions[0] -= 1
             idle = cls.sessions[0] <= 0
+        if idle and lock:
+            # away from home: the last phone left, lock the Mac so nobody at the desk sees or uses the session
+            with cls.input_lock:
+                try:
+                    cls.controller.handle({"t": "action", "a": "lock"})
+                except Exception:                               # noqa: BLE001
+                    pass
         stop = getattr(cls.frames.capture, "idle", None)
         if idle and stop:
             stop()                                          # nobody watching: stop the screen stream
@@ -399,11 +493,47 @@ class Handler(BaseHTTPRequestHandler):
             Handler.sessions[0] += 1
         Session(wslib.WebSocket(self.rfile, self.wfile), Handler).run()
 
+    MAX_UPLOAD = 4 << 30
+
+    def _upload(self, q: dict):
+        """A file from the phone into the Mac's Downloads folder (a name that is taken gets " (2)")."""
+        n = int(self.headers.get("Content-Length") or 0)
+        if n <= 0 or n > self.MAX_UPLOAD:
+            return self._json({"ok": False, "error": "ukuran file nggak valid (maks 4 GB)"}, 400)
+        name = os.path.basename(str(q.get("name") or "file")).strip().lstrip(".") or "file"
+        name = "".join(c for c in name if c not in '\\/:\0')[:200] or "file"
+        folder = DOWNLOADS()
+        folder.mkdir(parents=True, exist_ok=True)
+        stem, ext = os.path.splitext(name)
+        dest, i = folder / name, 2
+        while dest.exists():
+            dest, i = folder / f"{stem} ({i}){ext}", i + 1
+        part = dest.with_name(dest.name + ".part")
+        left = n
+        try:
+            with open(part, "wb") as f:
+                while left > 0:
+                    chunk = self.rfile.read(min(left, 1 << 20))
+                    if not chunk:
+                        raise ConnectionError("upload terputus")
+                    f.write(chunk)
+                    left -= len(chunk)
+            part.rename(dest)
+        except (OSError, ConnectionError) as exc:
+            try:
+                part.unlink()
+            except OSError:
+                pass
+            return self._json({"ok": False, "error": str(exc)[:200]}, 500)
+        return self._json({"ok": True, "name": dest.name, "path": str(dest), "bytes": n})
+
     def do_POST(self):
         u = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
         if not self._authed(q):
             return self._json({"ok": False, "error": "token salah"}, 401)
+        if u.path == "/api/upload":
+            return self._upload(q)
         if u.path != "/api/input":
             return self._json({"ok": False, "error": "not found"}, 404)
         try:
@@ -449,6 +579,8 @@ def build(demo: bool):
 
 def serve(port: int, demo: bool, host: str = "0.0.0.0"):
     cfg = load_config()
+    if demo and not os.environ.get("MAC_REMOTE_DOWNLOADS"):
+        os.environ["MAC_REMOTE_DOWNLOADS"] = str(CONFIG.parent / "Downloads")      # the demo never writes to ~/Downloads
     inp, cap, name = build(demo)
     Handler.token = cfg["token"]
     Handler.name = name

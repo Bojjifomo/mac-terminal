@@ -33,6 +33,7 @@ button { font: inherit; color: inherit; }
   border-radius: 18px 18px 6px 6px; padding: 8px 8px 6px; box-shadow: 0 0 0 2px #1a1b1e inset; }
 #screen { position: relative; width: 100%; aspect-ratio: 16 / 10; max-height: var(--scr-max); margin: 0 auto;
   background: #000; border-radius: 6px; overflow: hidden; touch-action: none; }
+#view { position: absolute; inset: 0; transform-origin: 0 0; will-change: transform; }
 #frame { width: 100%; height: 100%; display: block; object-fit: contain; pointer-events: none; }
 #cursor { position: absolute; width: 14px; height: 20px; pointer-events: none; display: block; transform: translate(-1px, -1px); z-index: 1;
   background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 20'><path d='M1 1v15l4-3.5 2.8 5.8 2.4-1.1L7.4 11.6H12z' fill='black' stroke='white' stroke-width='1.2'/></svg>") no-repeat; }
@@ -162,3 +163,31 @@ body.full #screen { max-height: 100%; }
 #loupe .lz { position: absolute; bottom: 9%; left: 50%; transform: translateX(-50%); font-size: 10px; color: #fff;
   background: rgba(0,0,0,.55); padding: 1px 6px; border-radius: 8px; }
 #tools button.auto { box-shadow: 0 0 0 1.5px var(--accent) inset; color: #fff; }
+
+/* ---------- Touch Bar row ---------- */
+#tools { align-items: stretch; }
+#tools > button { flex: 0 0 auto; min-width: 34px; padding: 0 6px; }
+#ctx { flex: 1 1 auto; display: flex; gap: 6px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+#ctx::-webkit-scrollbar { display: none; }
+#ctx button { flex: 1 0 auto; min-width: 30px; height: 26px; border: 0; border-radius: 6px; background: rgba(0,0,0,.28);
+  color: #cfd3da; font-size: 13px; padding: 0 6px; }
+#ctx button:active { background: var(--accent); color: #fff; }
+#ctx .app { flex: 0 1 auto; align-self: center; font-size: 10px; color: var(--muted); padding: 0 2px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; max-width: 22vw; }
+
+/* ---------- clipboard ---------- */
+#clipbar { position: fixed; left: 50%; transform: translateX(-50%); bottom: max(12px, env(safe-area-inset-bottom)); z-index: 25;
+  display: flex; gap: 8px; align-items: center; max-width: 92vw; background: rgba(30,30,34,.96); border: 1px solid rgba(255,255,255,.14);
+  border-radius: 12px; padding: 8px 10px; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+#clipbar[hidden] { display: none; }
+#clipbar .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: #dfe3ea; }
+#clipbar button, #clipSheet button { background: #2a2a30; border: 1px solid #3a3a42; border-radius: 8px; padding: 6px 10px; color: #fff; white-space: nowrap; }
+#clipbar #clipCopy, #clipSheet .go { background: var(--accent); border-color: var(--accent); }
+#clipSheet { position: fixed; inset: 0; z-index: 30; background: rgba(0,0,0,.5); display: flex; align-items: flex-end; justify-content: center; }
+#clipSheet[hidden] { display: none; }
+#clipSheet .card { width: 100%; max-width: 520px; background: #1c1c20; border-radius: 16px 16px 0 0;
+  padding: 14px 16px max(16px, env(safe-area-inset-bottom)); -webkit-user-select: text; user-select: text; }
+#clipIn { width: 100%; font-size: 16px; background: #2a2a30; color: inherit; border: 1px solid #3a3a42; border-radius: 8px; padding: 8px; margin: 6px 0; }
+#clipSheet .row2 { display: flex; gap: 8px; }
+#clipSheet .row2 button { flex: 1; }
+@media (max-width: 520px) { #ctx .app { display: none; } }

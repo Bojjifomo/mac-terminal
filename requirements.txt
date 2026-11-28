@@ -3,3 +3,4 @@ pyobjc-framework-ScreenCaptureKit
 pyobjc-framework-ApplicationServices
 pyobjc-framework-CoreMedia
 pyobjc-framework-libdispatch
+pyobjc-framework-Cocoa
