@@ -114,7 +114,7 @@ class ServerTest(unittest.TestCase):
         server.Handler.token = cls.token
         server.Handler.name = "Test Mac"
         server.Handler.controller = control.Controller(cls.inp)
-        server.Handler.frames = server.FrameSource(DemoCapture(cls.inp), cls.inp.displays, share_s=0)
+        server.Handler.frames = server.FrameSource(DemoCapture(cls.inp, clock=False), cls.inp.displays, share_s=0)
         cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
         cls.base = f"http://127.0.0.1:{cls.srv.server_address[1]}"
         threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
@@ -179,7 +179,7 @@ class WebSocketTest(unittest.TestCase):
         server.Handler.token = "tok"
         server.Handler.name = "WS Mac"
         server.Handler.controller = control.Controller(cls.inp)
-        server.Handler.frames = server.FrameSource(DemoCapture(cls.inp), cls.inp.displays, share_s=0)
+        server.Handler.frames = server.FrameSource(DemoCapture(cls.inp, clock=False), cls.inp.displays, share_s=0)
         cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
         threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
 
@@ -303,6 +303,69 @@ class WebSocketTest(unittest.TestCase):
                 break
             self.tx(s, {"t": "ack"})
         self.assertEqual(head["r"][:2], [0.0, 0.0])
+
+    def test_clipboard_both_ways_and_front_app(self):
+        s, f, *_ = self.connect()
+        self.rx(f)
+        self.tx(s, {"t": "cfg", "w": 320, "q": 0.5, "fps": 30})
+        got = {}
+        import time as _t
+        deadline = _t.time() + 4
+        _t.sleep(0.8)                                                   # the server reads what was there first
+        self.inp.set_clipboard("baru di-copy di Mac")                  # a copy on the Mac reaches the phone
+        while _t.time() < deadline and not ("clip" in got and "app" in got):
+            m = self.rx(f)
+            if isinstance(m, str):
+                j = json.loads(m)
+                got[j["t"]] = j
+            else:
+                self.tx(s, {"t": "ack"})
+        self.assertEqual(got["app"]["name"], "Notes")
+        self.assertEqual(got["clip"]["s"], "baru di-copy di Mac")
+        before = len(self.inp.log)
+        self.tx(s, {"t": "clipset", "s": "dari HP", "paste": True})    # and back: onto the Mac, then ⌘V
+        _t.sleep(0.3)
+        self.assertEqual(self.inp.clip[1], "dari HP")
+        self.assertIn(("key", 9, True, 0x100000), self.inp.log[before:])
+
+    def test_upload_lands_in_downloads(self):
+        import tempfile as _tf
+        d = _tf.mkdtemp()
+        os.environ["MAC_REMOTE_DOWNLOADS"] = d
+        self.addCleanup(os.environ.pop, "MAC_REMOTE_DOWNLOADS", None)
+        base = f"http://127.0.0.1:{self.srv.server_address[1]}/api/upload?token=tok&name="
+        for _ in range(2):
+            req = urllib.request.Request(base + "../foto%20liburan.jpg", data=b"\xff\xd8hello", method="POST",
+                                         headers={"Content-Type": "application/octet-stream"})
+            with urllib.request.urlopen(req) as r:
+                j = json.loads(r.read())
+            self.assertTrue(j["ok"])
+        self.assertEqual(sorted(os.listdir(d)), ["foto liburan (2).jpg", "foto liburan.jpg"])   # never outside, never over
+        with open(os.path.join(d, "foto liburan.jpg"), "rb") as fh:
+            self.assertEqual(fh.read(), b"\xff\xd8hello")
+
+
+class AdaptiveTest(unittest.TestCase):
+    def test_slow_phone_gets_smaller_pictures_then_bigger_again(self):
+        sess = server.Session(None, server.Handler)
+        for _ in range(6):
+            sess._adapt(900)                                            # 0.9 s to show each picture: bad signal
+        self.assertLess(sess.scale, 0.5)
+        low = sess.scale
+        import time as _t
+        for _ in range(40):
+            sess.good_since -= 3                                        # pretend time passes
+            sess._adapt(60)
+        self.assertGreater(sess.scale, low)
+        self.assertLessEqual(sess.scale, 1.0)
+
+    def test_lock_when_the_last_phone_leaves(self):
+        inp = DemoInput()
+        server.Handler.controller = control.Controller(inp)
+        server.Handler.sessions[0] = 1
+        server.Handler.frames = server.FrameSource(DemoCapture(inp, clock=False), inp.displays)
+        server.Handler.session_ended(lock=True)
+        self.assertEqual(inp.log[0], ("key", 12, True, 0x40000 | 0x100000))   # ⌃⌘Q
 
 
 if __name__ == "__main__":

@@ -62,12 +62,26 @@ class DemoInput:
     def action(self, name):
         self._touch("action", name)
 
+    clip = (1, "teks yang di-copy di Mac demo")
+    app = {"id": "com.apple.Notes", "name": "Notes"}
+
+    def clipboard(self):
+        return self.clip
+
+    def set_clipboard(self, text):
+        self.clip = (self.clip[0] + 1, str(text))
+        return self.clip[0]
+
+    def front_app(self):
+        return self.app
+
 
 class DemoCapture:
     cursor_in_image = False                           # like the Mac: the phone draws the pointer
 
-    def __init__(self, inp: DemoInput):
+    def __init__(self, inp: DemoInput, clock: bool = True):
         self.inp = inp
+        self.clock = clock                             # tests turn the menu-bar clock off: a still screen stays still
 
     def grab(self, display_id: int, width: int, quality: float):
         from PIL import Image, ImageDraw
@@ -85,7 +99,8 @@ class DemoCapture:
         d = ImageDraw.Draw(im)
         d.rectangle([0, 0, w, 24 * s], fill=(235, 235, 240))  # menu bar
         d.text((14 * s, 5 * s), "  Finder   File   Edit   View   Go   Window   Help", fill=(20, 20, 20))
-        d.text((w - 120 * s, 5 * s), time.strftime("%a %H:%M"), fill=(20, 20, 20))
+        if self.clock:
+            d.text((w - 120 * s, 5 * s), time.strftime("%a %H:%M"), fill=(20, 20, 20))
         x0, y0, x1, y1 = 160 * s, 110 * s, 1100 * s, 720 * s  # notes window
         d.rounded_rectangle([x0, y0, x1, y1], radius=12 * s, fill=(250, 250, 250))
         d.rounded_rectangle([x0, y0, x1, y0 + 34 * s], radius=12 * s, fill=(225, 225, 230))

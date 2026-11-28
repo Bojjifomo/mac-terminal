@@ -6,9 +6,27 @@ Kendaliin Mac mini dan MacBook Pro dari iPhone. Layar Mac di atas, keyboard MacB
 - **🔍 Kaca pembesar (klik akurat)**: lingkaran pembesar di dekat pointer, tanda **+** merah = titik persis yang bakal diklik. Isinya potongan layar Mac dalam **resolusi asli** (tulisan "tajam"), bukan gambar kecil yang di-zoom. Mode di tombol 🔍 atau ⚙: **Auto** (muncul sendiri pas jari di trackpad pelan / diam: lagi ngepas, hilang pas geser cepat), **Selalu nyala**, **Mati**. Perbesar 2× / 3× / 4× / 6×. Selama kaca nyala, pointer gerak lebih pelan biar gampang ngepas (bisa dimatiin di ⚙).
 - **Keyboard**: layout MacBook lengkap (esc + F1–F12 opsional, angka, huruf, ⇧ ⌃ ⌥ ⌘ fn, panah). Tahan ⌫ / panah = berulang.
 - **Modifier**: tap ⌘ sekali = buat tombol berikutnya (⌘C, ⌘V). Tap dua kali atau tahan = dikunci dan beneran ditahan di Mac (⌘+Tab: kunci ⌘, tap Tab berkali-kali, tap ⌘ lagi). fn + panah = Home / End / PgUp / PgDn.
-- **Trackpad**: 1 jari geser (pakai akselerasi), tap = klik, tap dua kali = double click, 2 jari geser = scroll, 2 jari tap = klik kanan, tahan atau tap-lalu-geser = drag, 3 jari kiri/kanan = ganti desktop, 3 jari atas = Mission Control.
+- **Trackpad**: 1 jari geser (pakai akselerasi), tap = klik, tap dua kali = double click, 2 jari tap = klik kanan, tahan atau tap-lalu-geser = drag, 3 jari kiri/kanan = ganti desktop, 3 jari atas = Mission Control.
 - **Aa**: ketik pakai keyboard iPhone (lebih cepat buat teks panjang, dikte suara juga bisa).
-- **Baris tombol**: Mission Control, desktop kiri/kanan, Spotlight, volume, mute.
+- **Keyboard Bluetooth / Magic Keyboard** yang nyambung ke iPhone langsung ngetik ke Mac, shortcut ⌘ ⌥ ⌃ ikut.
+- **Baris atas ala Touch Bar**: ikut app yang lagi kebuka di Mac. Browser: ◀︎ ▶︎ ⟳ tab baru / tutup / zoom. Music, Spotify, YouTube: ⏮ ⏯ ⏭ (tombol media Mac). Keynote / PowerPoint: slide maju / mundur. Finder: folder baru. Lainnya: Mission Control, desktop, Spotlight, volume, 🔒 kunci Mac.
+- **📋 Clipboard dua arah**: copy di Mac → muncul bar "Salin ke HP". Tombol 📋 → tempel teks dari HP → masuk clipboard Mac (atau langsung ⌘V).
+- **📎 Kirim foto / file** ke folder Downloads Mac (nama yang udah ada jadi "(2)", nggak pernah ditimpa).
+- **Trackpad**: scroll 2 jari pakai **momentum** (lepas jari, halamannya jalan terus pelan-pelan berhenti), **cubit = zoom** (⌘+ / ⌘−, buat browser, Preview, Maps), **4 jari** kiri/kanan = ganti app, atas = tampilin desktop.
+- **Cubit di layar** = zoom gambar layar di HP (geser pakai 2 jari, pointer selalu diikutin). Tombol `2.0× ⟲` di bawah layar buat balik.
+- **Bunyi klik** pas ngetik (bisa dimatiin di ⚙).
+
+## Akses dari luar rumah
+
+Ini fokusnya, dan yang bikin beda dari DuoBook:
+
+- **Kualitas otomatis** (default, ⚙ > Kualitas: Auto): Mac ngukur berapa lama HP nampilin tiap gambar. Sinyal jelek → gambar dikecilin (sampai 40%) biar tetap lancar. Sinyal bagus lagi → ditajamin pelan-pelan.
+- **Info koneksi** selalu kelihatan di bawah layar: fps + ping (ms). Detail (ukuran gambar, KB, delay) di ⚙ > Di luar rumah.
+- **Kunci Mac pas HP putus** (⚙ > Di luar rumah): HP terakhir putus → Mac langsung terkunci (⌃⌘Q). Orang di rumah nggak bisa lihat atau pakai sesi lo.
+- **Mac nggak tidur** selama `Mac Remote.command` jalan (`caffeinate -is`), jadi tetap bisa dijangkau.
+- **Nyambung lagi sendiri** kalau sinyal putus (masuk lift, pindah Wi-Fi ke 4G).
+- **Tailscale**: tanpa buka port router. Koneksi terenkripsi, cuma device lo yang bisa nyambung.
+- **Clipboard di HTTP biasa**: lewat Tailscale halamannya `http://`, jadi iPhone nggak ngizinin baca clipboard otomatis. Makanya tempel dari HP lewat kotak 📋 (tahan → Paste).
 - **Dua Mac**: tombol nama Mac di pojok kanan atas = pindah Mac (kalau ada 2, sekali tap langsung pindah). ⚙ = daftar Mac, kualitas, fps, kecepatan trackpad, arah scroll.
 - **⤢**: layar penuh (keyboard disembunyiin), ⌨︎ buat balik.
 
