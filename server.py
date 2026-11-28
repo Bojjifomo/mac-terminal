@@ -35,7 +35,7 @@ WEB = HERE / "web"
 CONFIG = Path(os.environ.get("MAC_REMOTE_HOME", Path.home() / ".mac-remote")) / "config.json"
 # where files from the phone go: the Mac's Downloads (the demo keeps them next to its config)
 DOWNLOADS = lambda: Path(os.environ["MAC_REMOTE_DOWNLOADS"]) if os.environ.get("MAC_REMOTE_DOWNLOADS") else Path.home() / "Downloads"
-VERSION = "1.3"
+VERSION = "1.4"
 STATIC = {"/": "index.html", "/index.html": "index.html", "/app.js": "app.js", "/style.css": "style.css",
           "/manifest.webmanifest": "manifest.webmanifest", "/icon.svg": "icon.svg", "/icon-180.png": "icon-180.png",
           "/icon-512.png": "icon-512.png"}
@@ -150,6 +150,7 @@ class Session:
         self.lag_ms = 0.0
         self.good_since = time.monotonic()
         self.lock_on_leave = False
+        self.seq = 0                          # last input batch handled: a pointer position is current from here on
 
     # ---- frames out
     def sender(self):
@@ -168,8 +169,9 @@ class Session:
                     q = max(0.35, min(q, 0.35 + 0.3 * self.scale))
                 f = self.H.frames.frame(int(cfg["d"]), w, q)
                 d = f["display"]
-                cx, cy = self.H.controller.b.pos()
-                cur = [round((cx - d["x"]) / d["w"], 5), round((cy - d["y"]) / d["h"], 5)]
+                seq = self.seq                                     # read before the position: it includes these moves
+                cx, cy = self.H.controller.pos()
+                cur = [round((cx - d["x"]) / d["w"], 5), round((cy - d["y"]) / d["h"], 5), seq]
                 if f["etag"] != self.last_etag:
                     head = json.dumps({"t": "frame", "w": f["w"], "h": f["h"], "sw": d["w"], "sh": d["h"], "c": cur,
                                        "id": f["etag"], "kb": round(len(f["data"]) / 1024), "lag": round(self.lag_ms),
@@ -179,7 +181,7 @@ class Session:
                         self.sent_at.append(time.monotonic())
                     self.ws.send_bytes(len(head).to_bytes(4, "big") + head + f["data"])
                     self.last_etag, self.last_cursor = f["etag"], cur
-                elif cur != self.last_cursor:                  # screen still, pointer moved (mouse at the Mac)
+                elif cur[:2] != (self.last_cursor or [None, None])[:2]:   # screen still, pointer moved
                     self.ws.send_text(json.dumps({"t": "cursor", "c": cur}))
                     self.last_cursor = cur
                 wait = 1.0 / max(1, min(60, float(cfg["fps"]))) - (time.monotonic() - t0)
@@ -211,7 +213,8 @@ class Session:
                 t0 = time.monotonic()
                 ds = self.H.controller.b.displays()
                 d = ds[min(max(int(cfg["d"]), 0), len(ds) - 1)]
-                cx, cy = self.H.controller.b.pos()
+                seq = self.seq
+                cx, cy = self.H.controller.pos()
                 side = min(max(float(z["side"]), 16.0), min(d["w"], d["h"]))
                 # centred on the pointer, kept inside the screen
                 x = min(max(cx - d["x"] - side / 2, 0.0), d["w"] - side)
@@ -219,7 +222,8 @@ class Session:
                 key = (round(x), round(y), round(side), self.last_etag)
                 if key != last or time.monotonic() - getattr(self, "_zoom_t", 0) > 0.5:
                     data = self.H.frames.region(d["id"], x, y, side, int(z["px"]), 0.7)
-                    head = json.dumps({"t": "zoom", "r": [x / d["w"], y / d["h"], side / d["w"], side / d["h"]]}).encode()
+                    head = json.dumps({"t": "zoom", "r": [x / d["w"], y / d["h"], side / d["w"], side / d["h"]],
+                                       "c": [(cx - d["x"]) / d["w"], (cy - d["y"]) / d["h"], seq]}).encode()
                     with self.cond:
                         self.zoom_in_flight += 1
                     self.ws.send_bytes(len(head).to_bytes(4, "big") + head + data)
@@ -338,6 +342,8 @@ class Session:
             with self.H.input_lock:
                 self.H.controller.handle_all(list(m.get("ev") or [])[:500])
                 self.H.last_input[0] = time.monotonic()
+            if m.get("seq") is not None:
+                self.seq = int(m["seq"])
         elif t == "ping":
             self.ws.send_text(json.dumps({"t": "pong", "ts": m.get("ts")}))
         elif t == "clipset":
@@ -442,7 +448,7 @@ class Handler(BaseHTTPRequestHandler):
                 width = min(max(int(q.get("w", 1280)), 160), 3200)
                 quality = min(max(float(q.get("q", 0.6)), 0.2), 0.95)
                 f = self.frames.frame(int(q.get("d", 0)), width, quality)
-                cx, cy = self.controller.b.pos()
+                cx, cy = self.controller.pos()
                 d = f["display"]
                 extra = {"X-Frame": f["etag"], "X-Screen": f"{d['w']:.0f}x{d['h']:.0f}",
                          "X-Cursor": f"{(cx - d['x']) / d['w']:.5f},{(cy - d['y']) / d['h']:.5f}"}
