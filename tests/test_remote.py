@@ -54,6 +54,21 @@ class ControllerTest(unittest.TestCase):
         self.c.handle({"t": "move", "dx": 99999, "dy": -99999})
         self.assertEqual((self.inp.x, self.inp.y), (1511, 0))
 
+
+    def test_moves_do_not_get_lost_when_macos_is_slow_to_report(self):
+        # macOS can still report the old position right after a posted move: every move must count anyway
+        class Lagging(DemoInput):
+            def pos(self):
+                return (100.0, 100.0)                                   # never updated
+        inp = Lagging()
+        c = control.Controller(inp, clock=self.clock)
+        for _ in range(5):
+            c.handle({"t": "move", "dx": 10, "dy": 0})
+        self.assertEqual(inp.x, 150)
+        self.clock.t += 1.0                                             # quiet: ask macOS again (mouse at the Mac)
+        c.handle({"t": "move", "dx": 1, "dy": 0})
+        self.assertEqual(inp.x, 101)
+
     def test_move_to_is_relative_to_the_display(self):
         self.c.handle({"t": "moveTo", "x": 0.5, "y": 0.25, "d": 0})
         self.assertEqual((self.inp.x, self.inp.y), (756, 245.5))
@@ -238,7 +253,7 @@ class WebSocketTest(unittest.TestCase):
         head, jpeg = self.frame(f)
         self.assertEqual(jpeg[:2], b"\xff\xd8")
         self.assertEqual(head["w"], 480)
-        self.assertEqual(len(head["c"]), 2)
+        self.assertEqual(len(head["c"]), 3)                              # x, y, last input batch handled
         self.tx(s, {"t": "ack"})
         self.tx(s, {"t": "input", "ev": [{"t": "text", "s": "lewat socket"}]})
         head2, _ = self.frame(f)                                         # the screen changed: a new picture
@@ -343,6 +358,22 @@ class WebSocketTest(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(d)), ["foto liburan (2).jpg", "foto liburan.jpg"])   # never outside, never over
         with open(os.path.join(d, "foto liburan.jpg"), "rb") as fh:
             self.assertEqual(fh.read(), b"\xff\xd8hello")
+
+    def test_pointer_position_is_marked_with_the_input_it_includes(self):
+        s, f, *_ = self.connect()
+        self.rx(f)
+        self.tx(s, {"t": "cfg", "w": 320, "q": 0.5, "fps": 60})
+        self.frame(f)
+        self.tx(s, {"t": "ack"})
+        self.tx(s, {"t": "input", "seq": 7, "ev": [{"t": "moveTo", "x": 0.25, "y": 0.5, "d": 0},
+                                                  {"t": "text", "s": "!"}]})
+        for _ in range(10):
+            head, _ = self.frame(f)
+            self.tx(s, {"t": "ack"})
+            if head["c"][2] == 7:
+                break
+        self.assertEqual(head["c"][2], 7)
+        self.assertAlmostEqual(head["c"][0], 0.25, places=3)
 
 
 class AdaptiveTest(unittest.TestCase):

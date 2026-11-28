@@ -70,6 +70,12 @@ class Controller:
         self.held_mods: set[str] = set()
         self.held_button: str | None = None
         self._last_click = (None, 0.0, 0.0, 0.0, 0)   # button, t, x, y, count
+        # Where the pointer is, as far as our own moves go. Asking macOS right after posting a move can give the
+        # position from before it (the event is not handled yet): moves then get lost and the pointer stutters.
+        # So we keep our own while the phone is moving it, and ask macOS again after a quiet moment (a mouse at
+        # the Mac may have moved it meanwhile).
+        self._vpos = None
+        self._vpos_t = 0.0
 
     # ---- geometry
     def _clamp(self, x: float, y: float) -> tuple[float, float]:
@@ -86,6 +92,17 @@ class Controller:
             if bd is None or dist < bd:
                 best, bd = (cx, cy), dist
         return best if best else (x, y)
+
+    VPOS_FRESH_S = 0.5
+
+    def pos(self) -> tuple[float, float]:
+        if self._vpos is None or self.clock() - self._vpos_t > self.VPOS_FRESH_S:
+            self._vpos = tuple(self.b.pos())
+        return self._vpos
+
+    def _moved(self, x: float, y: float) -> None:
+        self._vpos = (x, y)
+        self._vpos_t = self.clock()
 
     def _flags(self, extra=()) -> int:
         return flags_for(set(self.held_mods) | set(extra or ()))
@@ -106,16 +123,19 @@ class Controller:
         return n
 
     def _ev_move(self, ev):
-        x, y = self.b.pos()
+        x, y = self.pos()
         x, y = self._clamp(x + float(ev.get("dx", 0)), y + float(ev.get("dy", 0)))
         self.b.move(x, y, self.held_button)
+        self._moved(x, y)
 
     def _ev_moveTo(self, ev):
         ds = self.b.displays()
         d = ds[min(max(int(ev.get("d", 0)), 0), len(ds) - 1)]
         nx = min(max(float(ev["x"]), 0.0), 0.9999)
         ny = min(max(float(ev["y"]), 0.0), 0.9999)
-        self.b.move(d["x"] + nx * d["w"], d["y"] + ny * d["h"], self.held_button)
+        x, y = d["x"] + nx * d["w"], d["y"] + ny * d["h"]
+        self.b.move(x, y, self.held_button)
+        self._moved(x, y)
 
     def _click_count(self, button: str, x: float, y: float) -> int:
         lb, lt, lx, ly, lc = self._last_click
@@ -135,7 +155,7 @@ class Controller:
 
     def _ev_click(self, ev):
         b = self._button(ev)
-        x, y = self.b.pos()
+        x, y = self.pos()
         n = int(ev["n"]) if ev.get("n") else self._click_count(b, x, y)
         flags = self._flags(ev.get("mods"))
         if n > 1 and ev.get("n"):
@@ -150,14 +170,14 @@ class Controller:
 
     def _ev_down(self, ev):
         b = self._button(ev)
-        x, y = self.b.pos()
+        x, y = self.pos()
         self.held_button = b
         self._last_click = (None, 0.0, 0.0, 0.0, 0)        # a drag never turns into a double click
         self.b.button(b, True, x, y, 1, self._flags(ev.get("mods")))
 
     def _ev_up(self, ev):
         b = self._button(ev)
-        x, y = self.b.pos()
+        x, y = self.pos()
         self.held_button = None
         self.b.button(b, False, x, y, 1, self._flags(ev.get("mods")))
 

@@ -9,7 +9,7 @@ Kendaliin Mac mini dan MacBook Pro dari iPhone. Layar Mac di atas, keyboard MacB
 - **Trackpad**: 1 jari geser (pakai akselerasi), tap = klik, tap dua kali = double click, 2 jari tap = klik kanan, tahan atau tap-lalu-geser = drag, 3 jari kiri/kanan = ganti desktop, 3 jari atas = Mission Control.
 - **Aa**: ketik pakai keyboard iPhone (lebih cepat buat teks panjang, dikte suara juga bisa).
 - **Keyboard Bluetooth / Magic Keyboard** yang nyambung ke iPhone langsung ngetik ke Mac, shortcut ⌘ ⌥ ⌃ ikut.
-- **Baris atas ala Touch Bar**: ikut app yang lagi kebuka di Mac. Browser: ◀︎ ▶︎ ⟳ tab baru / tutup / zoom. Music, Spotify, YouTube: ⏮ ⏯ ⏭ (tombol media Mac). Keynote / PowerPoint: slide maju / mundur. Finder: folder baru. Lainnya: Mission Control, desktop, Spotlight, volume, 🔒 kunci Mac.
+- **Baris atas ala Touch Bar**: ikut app yang lagi kebuka di Mac. **Terminal / iTerm / VS Code / Cursor**: esc, tab, panah, ⌃C, ⌃D, ⌃R, ⌘K, ⌃A, ⌃E (tahan = berulang). Browser: ◀︎ ▶︎ ⟳ tab baru / tutup / zoom. Music, Spotify, YouTube: ⏮ ⏯ ⏭ (tombol media Mac). Keynote / PowerPoint: slide maju / mundur. Finder: folder baru. Lainnya: Mission Control, desktop, Spotlight, volume, 🔒 kunci Mac.
 - **📋 Clipboard dua arah**: copy di Mac → muncul bar "Salin ke HP". Tombol 📋 → tempel teks dari HP → masuk clipboard Mac (atau langsung ⌘V).
 - **📎 Kirim foto / file** ke folder Downloads Mac (nama yang udah ada jadi "(2)", nggak pernah ditimpa).
 - **Trackpad**: scroll 2 jari pakai **momentum** (lepas jari, halamannya jalan terus pelan-pelan berhenti), **cubit = zoom** (⌘+ / ⌘−, buat browser, Preview, Maps), **4 jari** kiri/kanan = ganti app, atas = tampilin desktop.

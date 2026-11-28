@@ -69,6 +69,25 @@ function switchDevice(i, quiet) {
   if (!quiet) toast("→ " + dev().name);
   renderSheet();
 }
+// The screen box is sized to exactly the Mac's picture (no black bars inside it). With bars, the pointer, taps and
+// the magnifier were placed against the whole box, not the picture: off by the bar's width in landscape.
+function fitScreen() {
+  const el = $("#screen"), bez = $("#bezel");
+  const d = (S.info?.displays || [])[S.display];
+  const a = d ? d.w / d.h : (live.sw && live.sh ? live.sw / live.sh : 16 / 10);
+  const bs = getComputedStyle(bez);
+  const W = bez.clientWidth - parseFloat(bs.paddingLeft) - parseFloat(bs.paddingRight);
+  let H;
+  if (document.body.classList.contains("full")) H = bez.clientHeight - parseFloat(bs.paddingTop) - parseFloat(bs.paddingBottom);
+  else {
+    el.style.height = "";                                          // read the CSS limit without our own value
+    H = parseFloat(getComputedStyle(el).maxHeight);
+  }
+  if (!isFinite(H) || H <= 0) H = Infinity;
+  const w = Math.max(50, Math.min(W, H * a));
+  el.style.width = w + "px";
+  el.style.height = w / a + "px";
+}
 function applyInfo(j) {
   S.info = j;
   dev().name = j.name;
@@ -79,6 +98,7 @@ function applyInfo(j) {
   $("#dispBtn").textContent = "▣ " + (S.display + 1);
   const d = (j.displays || [])[S.display];
   if (d) { $("#screen").style.aspectRatio = `${d.w} / ${d.h}`; live.sw = d.w; live.sh = d.h; }
+  fitScreen();
 }
 async function loadInfo() {
   const r = await fetch(api("/api/info"));
@@ -91,7 +111,7 @@ async function loadInfo() {
 // One WebSocket that stays open: the Mac pushes each new picture as soon as it has one, only when the screen
 // changed, and at most two ahead of what this phone has shown (older ones are dropped, never queued). Taps and
 // keys go back on the same socket. If a network refuses WebSockets, it falls back to asking picture by picture.
-const live = { ws: null, gen: 0, mode: "ws", fails: 0, frames: 0, t0: performance.now(), sw: 0, sh: 0,
+const live = { seq: 0, moveSeq: 0, ws: null, gen: 0, mode: "ws", fails: 0, frames: 0, t0: performance.now(), sw: 0, sh: 0,
   cursor: { x: 0.5, y: 0.5 }, localAt: 0, drawn: 0, got: 0 };
 const canvas = $("#frame");
 const ctx2d = canvas.getContext("2d");
@@ -213,12 +233,19 @@ function placeCursor() {
   c.style.left = live.cursor.x * 100 + "%";
   c.style.top = live.cursor.y * 100 + "%";
 }
+// The Mac marks each position with the last batch of input it had handled ([x, y, seq]). A position from before our
+// latest move is old news (on a slow link it arrives after the finger moved on): taking it made the pointer jump
+// back. So it is taken only once the Mac has caught up; then it is the truth (and shows a mouse moved at the Mac).
 function setCursor(c) {
-  if (!c || performance.now() - live.localAt < 350) return;       // our own move is still on its way
+  if (!c || !isFinite(c[0])) return;
+  if (c.length > 2 && isFinite(c[2])) { if (c[2] < live.moveSeq) return; }
+  else if (performance.now() - live.localAt < 350) return;          // older server: no marks, wait a moment
+  if (Math.abs(live.cursor.x - c[0]) < 1e-4 && Math.abs(live.cursor.y - c[1]) < 1e-4) return;
   live.cursor = { x: c[0], y: c[1] };
   placeCursor();
 paintLoupeBtn();
 renderTouchBar();
+fitScreen();
 requestAnimationFrame(loupeTick);
 }
 function predict(ev) {
@@ -277,7 +304,13 @@ function send(ev) {
 function flushInput() {
   if (!queue.length) return;
   const ws = live.ws;
-  if (ws && ws.readyState === 1) { ws.send(JSON.stringify({ t: "input", ev: queue.splice(0) })); return; }
+  if (ws && ws.readyState === 1) {
+    const ev = queue.splice(0);
+    const seq = ++live.seq;
+    if (ev.some(e => e.t === "move" || e.t === "moveTo")) live.moveSeq = seq;
+    ws.send(JSON.stringify({ t: "input", ev, seq }));
+    return;
+  }
   if (live.mode === "poll") httpFlush();
 }
 async function httpFlush() {
@@ -458,9 +491,10 @@ function padDown(e) {
     pad.start = now; pad.max = 0; pad.moved = 0; pad.three = { dx: 0, dy: 0 };
     pad.armDrag = now - pad.lastTapEnd < 280;            // tap, then touch again and move = drag
     clearTimeout(pad.holdTimer);
-    pad.holdTimer = setTimeout(() => { if (pad.pts.size === 1 && pad.moved < 6) startDrag(); }, 480);
+    pad.holdTimer = setTimeout(() => { if (pad.pts.size === 1 && pad.moved < 6) startDrag(); }, 650);
     // finger resting on the pad = about to aim: the magnifier comes up (auto)
-    setTimeout(() => { if (pad.pts.size === 1 && pad.moved < 6) aimSoon(900); }, 200);
+    pad.v = null;
+    pad.slowMs = 0;
   }
   pad.pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
   pad.max = Math.max(pad.max, pad.pts.size);
@@ -489,11 +523,17 @@ function padMove(e) {
   const n = pad.pts.size;
   if (n === 1) {
     if (pad.armDrag && !pad.dragging && pad.moved > 4) startDrag();
-    const v = dist / dt;                                   // css px per ms
-    let gain = S.speed * (1 + Math.min(v * 1.3, 4));        // pointer acceleration
-    if (v < 0.35) aimSoon(700);                             // slow = aiming: show the magnifier (auto)
-    else if (v > 1.2) loupe.until = 0;                       // a fast sweep across the screen: out of the way
-    if (S.precise && loupeShown()) gain = S.speed * 0.45 * (1 + Math.min(v * 0.6, 1.5));   // fine steps while it shows
+    // speed, smoothed over the last few events (one jittery event no longer jerks the pointer)
+    pad.v = pad.v == null ? dist / dt : pad.v * 0.6 + (dist / dt) * 0.4;
+    const v = pad.v;                                       // css px per ms
+    // acceleration like a Mac trackpad: slow = about 1:1 and exact, faster = more, smoothly (no sudden jumps)
+    const t = Math.min(1, Math.max(0, (v - 0.06) / 1.4));
+    let gain = S.speed * (0.6 + 2.6 * t * t * (3 - 2 * t));
+    // magnifier (auto): only after the finger has moved slowly for a moment (aiming), gone on a fast sweep
+    pad.slowMs = v < 0.3 ? (pad.slowMs || 0) + dt : 0;
+    if (pad.slowMs > 220) aimSoon(800);
+    else if (v > 1.1) loupe.until = 0;
+    if (S.precise && loupeShown()) gain *= v < 0.3 ? 0.55 : 0.8;   // finer steps while it shows
     send({ t: "move", dx: dx * gain, dy: dy * gain });
   } else if (n === 2) {
     const [a, b] = [...pad.pts.values()];
@@ -717,8 +757,9 @@ function loupeTick() {
   const ax = loupe.finger ? loupe.finger.x - sr.left : fr.left - sr.left + live.cursor.x * fr.width;
   const ay = loupe.finger ? loupe.finger.y - sr.top : fr.top - sr.top + live.cursor.y * fr.height;
   const gap = loupe.finger ? 46 : 22;
-  let cy = ay - size / 2 - gap;
-  if (cy - size / 2 < 2) cy = ay + size / 2 + gap;
+  const roomAbove = ay - gap - size > 2;
+  if (loupe.side === "below" ? roomAbove && ay - gap - size > 24 : !roomAbove) loupe.side = roomAbove ? "above" : "below";
+  let cy = loupe.side === "below" ? ay + size / 2 + gap : ay - size / 2 - gap;
   const cx = Math.min(sr.width - size / 2 - 2, Math.max(size / 2 + 2, ax));
   cy = Math.min(sr.height - size / 2 - 2, Math.max(size / 2 + 2, cy));
   el.style.setProperty("--lz", size + "px");
@@ -771,7 +812,12 @@ function imeSetup() {
 
 // ---------------------------------------------------------------- Touch Bar row: follows the app in front on the Mac
 const B = (label, act, title) => ({ label, act, title });
+const K = (label, key, mods, title) => ({ label, key, mods, title });
 const TOUCHBAR = [
+  { match: /terminal|iterm|warp|ghostty|kitty|alacritty|wezterm|hyper|tabby|vscode|code|cursor|xcode|zed|sublime|nova|jetbrains|pycharm|intellij/i,
+    keys: [K("esc", "escape"), K("⇥", "tab", [], "Tab"), K("◀", "left"), K("▲", "up"), K("▼", "down"), K("▶", "right"),
+      K("⌃C", "c", ["control"], "Stop (Ctrl+C)"), K("⌃D", "d", ["control"], "Ctrl+D"), K("⌃R", "r", ["control"], "Cari riwayat (Ctrl+R)"),
+      K("⌘K", "k", ["command"], "Bersihin layar"), K("⌃A", "a", ["control"], "Awal baris"), K("⌃E", "e", ["control"], "Akhir baris")] },
   { match: /safari|chrome|firefox|brave|arc|edge|opera|vivaldi|orion/i, keys: [B("◀︎", "back", "Kembali"), B("▶︎", "forward", "Maju"),
     B("⟳", "reload", "Muat ulang"), B("＋", "newTab", "Tab baru"), B("✕", "closeTab", "Tutup tab"), B("A−", "zoomOut", "Perkecil"), B("A+", "zoomIn", "Perbesar")] },
   { match: /music|spotify|itunes|podcasts|tv$|vlc|iina|quicktime/i, keys: [B("⏮", "prevtrack", "Sebelumnya"), B("⏯", "playpause", "Putar / jeda"),
@@ -789,7 +835,9 @@ function renderTouchBar(app) {
   const key = `${frontApp.id} ${frontApp.name}`;
   const set = TOUCHBAR.find(t => t.match.test(key)) || TOUCHBAR[TOUCHBAR.length - 1];
   $("#ctx").innerHTML = (frontApp.name ? `<span class="app">${escapeHtml(frontApp.name)}</span>` : "")
-    + set.keys.map(k => `<button data-act="${k.act}" title="${escapeHtml(k.title || k.label)}">${k.label}</button>`).join("");
+    + set.keys.map(k => k.key
+      ? `<button data-tkey="${escapeHtml(k.key)}" data-mods="${(k.mods || []).join(",")}" title="${escapeHtml(k.title || k.key)}">${k.label}</button>`
+      : `<button data-act="${k.act}" title="${escapeHtml(k.title || k.label)}">${k.label}</button>`).join("");
 }
 
 // ---------------------------------------------------------------- clipboard ⇄
@@ -957,6 +1005,21 @@ function bind() {
   s.addEventListener("pointercancel", scrUp);
   s.addEventListener("contextmenu", e => e.preventDefault());
 
+  // Touch Bar keys (Terminal row): tap = once, hold = repeats like a real key
+  const tb = { timer: null };
+  const tbStop = () => { clearTimeout(tb.timer); tb.timer = null; };
+  $("#ctx").addEventListener("pointerdown", e => {
+    const b = e.target.closest("[data-tkey]");
+    if (!b) return;
+    e.preventDefault();
+    click("key");
+    const ev = { t: "key", k: b.dataset.tkey, mods: (b.dataset.mods || "").split(",").filter(Boolean).concat(activeMods()) };
+    send({ ...ev });
+    afterKey();
+    tbStop();
+    tb.timer = setTimeout(function rep() { send({ ...ev }); tb.timer = setTimeout(rep, 55); }, 380);
+  });
+  for (const t of ["pointerup", "pointercancel", "pointerleave"]) $("#ctx").addEventListener(t, tbStop);
   $("#tools").addEventListener("click", e => {
     const b = e.target.closest("[data-act]");
     if (!b) return;
@@ -990,6 +1053,7 @@ function bind() {
     document.body.classList.toggle("full", on);
     $("#fullBtn").textContent = on ? "⤡ ⌨︎" : "⤢";
     $("#fullBtn").title = on ? "Balik ke keyboard + trackpad" : "Layar penuh";
+    fitScreen();
     setTimeout(sendCfg, 350);                                  // bigger picture: ask for a sharper one
   };
   $("#fullBtn").onclick = () => full(!document.body.classList.contains("full"));
@@ -1043,7 +1107,7 @@ function bind() {
   $("#clipSend").onclick = () => sendClip(false);
   $("#clipPaste").onclick = () => sendClip(true);
   hardwareKeys();
-  window.addEventListener("resize", () => { Object.assign(view, { s: 1, x: 0, y: 0 }); applyView(); });
+  window.addEventListener("resize", () => { fitScreen(); Object.assign(view, { s: 1, x: 0, y: 0 }); applyView(); });
   setting("#setLoupe", "loupe", String, paintLoupeBtn);
   setting("#setZoom", "zoom", Number);
   setting("#setPrecise", "precise", Boolean);
